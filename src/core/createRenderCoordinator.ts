@@ -8,6 +8,7 @@ import { createAreaRenderer } from '../renderers/createAreaRenderer';
 import { createLineRenderer } from '../renderers/createLineRenderer';
 import { createLinearScale } from '../utils/scales';
 import type { LinearScale } from '../utils/scales';
+import { parseCssColorToGPUColor } from '../utils/colors';
 
 export interface GPUContextLike {
   readonly device: GPUDevice | null;
@@ -26,8 +27,6 @@ export interface RenderCoordinator {
 type Bounds = Readonly<{ xMin: number; xMax: number; yMin: number; yMax: number }>;
 
 const DEFAULT_TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
-
-const DEFAULT_BACKGROUND_COLOR: GPUColor = { r: 0.1, g: 0.1, b: 0.15, a: 1.0 };
 
 const assertUnreachable = (value: never): never => {
   // Intentionally minimal message: this is used for compile-time exhaustiveness.
@@ -244,9 +243,23 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
     const gridArea = computeGridArea(gpuContext, currentOptions);
     const { xScale, yScale } = computeScales(currentOptions, gridArea);
 
-    gridRenderer.prepare(gridArea);
-    xAxisRenderer.prepare(currentOptions.xAxis, xScale, 'x', gridArea);
-    yAxisRenderer.prepare(currentOptions.yAxis, yScale, 'y', gridArea);
+    gridRenderer.prepare(gridArea, { color: currentOptions.theme.gridLineColor });
+    xAxisRenderer.prepare(
+      currentOptions.xAxis,
+      xScale,
+      'x',
+      gridArea,
+      currentOptions.theme.axisLineColor,
+      currentOptions.theme.axisTickColor
+    );
+    yAxisRenderer.prepare(
+      currentOptions.yAxis,
+      yScale,
+      'y',
+      gridArea,
+      currentOptions.theme.axisLineColor,
+      currentOptions.theme.axisTickColor
+    );
 
     const globalBounds = computeGlobalBounds(currentOptions.series);
     const defaultBaseline = currentOptions.yAxis.min ?? globalBounds.yMin;
@@ -287,13 +300,14 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
 
     const textureView = gpuContext.canvasContext.getCurrentTexture().createView();
     const encoder = device.createCommandEncoder({ label: 'renderCoordinator/commandEncoder' });
+    const clearValue = parseCssColorToGPUColor(currentOptions.theme.backgroundColor, { r: 0, g: 0, b: 0, a: 1 });
 
     const pass = encoder.beginRenderPass({
       label: 'renderCoordinator/renderPass',
       colorAttachments: [
         {
           view: textureView,
-          clearValue: DEFAULT_BACKGROUND_COLOR,
+          clearValue,
           loadOp: 'clear',
           storeOp: 'store',
         },

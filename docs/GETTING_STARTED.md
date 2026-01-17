@@ -61,6 +61,7 @@ Now that you have a GPU context initialized, you can:
 3. **Handle data** - Upload chart data to GPU buffers (internal helper: [`createDataStore.ts`](../src/data/createDataStore.ts))
 4. **Render** - Execute render passes to draw your charts
 5. **Themes (optional)** - Theme presets (`darkTheme`, `lightTheme`, `getTheme(name: ThemeName)`) and the `ThemeConfig` type are available from the public API. See [`src/themes/index.ts`](../src/themes/index.ts), [`types.ts`](../src/themes/types.ts), and [`API.md`](./API.md#themeconfig).
+   - Theme colors are applied during rendering (background clear, grid lines, and axes); see [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
 
 ## Troubleshooting
 

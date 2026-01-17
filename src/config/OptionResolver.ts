@@ -95,19 +95,26 @@ const normalizeOptionalColor = (color: unknown): string | undefined => {
 };
 
 export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChartGPUOptions {
-  const theme = resolveTheme(userOptions.theme);
+  const baseTheme = resolveTheme(userOptions.theme);
 
-  const paletteCandidate = sanitizePalette(userOptions.palette);
-  const palette =
-    paletteCandidate.length > 0
-      ? paletteCandidate
-      : sanitizePalette(theme.colorPalette).length > 0
-        ? sanitizePalette(theme.colorPalette)
-        : Array.from(defaultOptions.palette ?? defaultPalette);
+  // Backward compatibility:
+  // - If `userOptions.palette` is provided (non-empty), treat it as an override for the theme palette.
+  const paletteOverride = sanitizePalette(userOptions.palette);
+
+  const themeCandidate: ThemeConfig =
+    paletteOverride.length > 0 ? { ...baseTheme, colorPalette: paletteOverride } : baseTheme;
 
   // Ensure palette used for modulo indexing is never empty.
-  const safePalette = palette.length > 0 ? palette : Array.from(defaultPalette);
+  const paletteFromTheme = sanitizePalette(themeCandidate.colorPalette);
+  const safePalette =
+    paletteFromTheme.length > 0
+      ? paletteFromTheme
+      : sanitizePalette(defaultOptions.palette ?? defaultPalette).length > 0
+        ? sanitizePalette(defaultOptions.palette ?? defaultPalette)
+        : Array.from(defaultPalette);
+
   const paletteForIndexing = safePalette.length > 0 ? safePalette : ['#000000'];
+  const theme: ThemeConfig = { ...themeCandidate, colorPalette: paletteForIndexing.slice() };
 
   const grid: ResolvedGridConfig = {
     left: userOptions.grid?.left ?? defaultOptions.grid.left,
@@ -136,7 +143,7 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
 
   const series: ReadonlyArray<ResolvedSeriesConfig> = (userOptions.series ?? []).map((s, i) => {
     const explicitColor = normalizeOptionalColor(s.color);
-    const inheritedColor = paletteForIndexing[i % paletteForIndexing.length];
+    const inheritedColor = theme.colorPalette[i % theme.colorPalette.length];
     const color = explicitColor ?? inheritedColor;
 
     if (s.type === 'area') {
@@ -178,7 +185,7 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
     xAxis,
     yAxis,
     theme,
-    palette: safePalette,
+    palette: theme.colorPalette,
     series,
   };
 }
