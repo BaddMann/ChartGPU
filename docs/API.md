@@ -195,11 +195,17 @@ A minimal line-strip renderer factory lives in [`createLineRenderer.ts`](../src/
 
 Shader source: [`line.wgsl`](../src/shaders/line.wgsl).
 
+#### Grid renderer (internal / contributor notes)
+
+A minimal grid-line renderer factory lives in [`createGridRenderer.ts`](../src/renderers/createGridRenderer.ts). It renders horizontal/vertical grid lines directly in clip space and is exercised by the interactive example in [`examples/grid-test/main.ts`](../examples/grid-test/main.ts). Shader source: [`grid.wgsl`](../src/shaders/grid.wgsl).
+
+The factory supports `createGridRenderer(device, options?)` where `options.targetFormat?: GPUTextureFormat` must match the canvas context format used for the render pass color attachment (usually `GPUContextState.preferredFormat`) to avoid a WebGPU validation error caused by a pipeline/attachment format mismatch.
+
 **WGSL imports:** renderers may import WGSL as a raw string via Vite’s `?raw` query (e.g. `*.wgsl?raw`). TypeScript support for this pattern is provided by [`wgsl-raw.d.ts`](../src/wgsl-raw.d.ts).
 
 Notes:
 
-- **Render target format**: the pipeline target format must match the render pass color attachment format. `createLineRenderer` currently uses a default target format (`bgra8unorm`).
+- **Render target format**: the pipeline target format must match the render pass color attachment format, otherwise WebGPU will raise a validation error due to a pipeline/attachment format mismatch. `createLineRenderer` uses a default target format (`bgra8unorm`). `createGridRenderer` allows configuring this via `GridRendererOptions.targetFormat` (typically `GPUContextState.preferredFormat`).
 - **Scale output space**: `prepare(...)` treats scales as affine and uses `scale(...)` samples to build a clip-space transform. Scales that output pixels (or non-linear scales) will require a different transform strategy.
 - **Line width and alpha**: WebGPU line primitives are effectively 1px-class across implementations; wide lines require triangle-based extrusion. Opacity only composites as expected when blending is enabled in the pipeline/target.
 

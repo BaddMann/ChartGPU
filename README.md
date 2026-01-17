@@ -104,6 +104,8 @@ See the [examples directory](examples/) for complete working examples. The `hell
 
 See [hello-world/main.ts](examples/hello-world/main.ts) for implementation.
 
+The `grid-test` example demonstrates matching a renderer pipeline’s target format to the configured canvas format (to avoid a WebGPU validation error caused by a pipeline/attachment format mismatch). See [grid-test/main.ts](examples/grid-test/main.ts) and [`createGridRenderer.ts`](src/renderers/createGridRenderer.ts).
+
 ## License
 
 MIT
