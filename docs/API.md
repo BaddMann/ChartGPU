@@ -241,7 +241,10 @@ A minimal line-strip renderer factory lives in [`createLineRenderer.ts`](../src/
 - **`LineRenderer.render(passEncoder: GPURenderPassEncoder): void`**
 - **`LineRenderer.dispose(): void`**
 
-Shader source: [`line.wgsl`](../src/shaders/line.wgsl).
+Shader sources: [`line.wgsl`](../src/shaders/line.wgsl) and [`area.wgsl`](../src/shaders/area.wgsl) (triangle-strip filled area under a line).
+
+- **Area strip vertex convention (essential)**: `area.wgsl` expects CPU-expanded vertices as `p0,p0,p1,p1,...` (triangle-strip), using `@builtin(vertex_index)` parity to choose between the original y and a uniform `baseline`.
+- **Area uniforms (essential)**: vertex uniform includes `transform` and `baseline`; fragment uniform includes solid `color: vec4<f32>`.
 
 #### Grid renderer (internal / contributor notes)
 
@@ -264,6 +267,7 @@ A minimal axis (baseline + ticks) renderer factory lives in [`createAxisRenderer
 
 Notes:
 
+- **Example shader compilation smoke-check**: the hello-world example imports `line.wgsl` and `area.wgsl` via `?raw` and (when supported) uses `GPUShaderModule.getCompilationInfo()` to fail fast on shader compilation errors. See [`examples/hello-world/main.ts`](../examples/hello-world/main.ts).
 - **Render target format**: a renderer pipeline’s target format must match the render pass color attachment format (otherwise WebGPU raises a pipeline/attachment format mismatch validation error). `createAxisRenderer`, `createGridRenderer`, and `createLineRenderer` each accept `options.targetFormat` (typically `GPUContextState.preferredFormat`) and default to `'bgra8unorm'` for backward compatibility.
 - **Scale output space**: `prepare(...)` treats scales as affine and uses `scale(...)` samples to build a clip-space transform. Scales that output pixels (or non-linear scales) will require a different transform strategy.
 - **Line width and alpha**: line primitives are effectively 1px-class across implementations; wide lines require triangle-based extrusion. `createLineRenderer` enables standard alpha blending so `lineStyle.opacity` composites as expected.

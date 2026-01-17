@@ -105,7 +105,7 @@ Run `npm run dev` to start the development server. Navigate to `http://localhost
 
 ## Examples
 
-See the [examples directory](examples/) for complete working examples. The `hello-world` example demonstrates continuous rendering by animating the clear color through the full color spectrum.
+See the [examples directory](examples/) for complete working examples. The `hello-world` example demonstrates continuous rendering by animating the clear color through the full color spectrum. It also imports [`line.wgsl`](src/shaders/line.wgsl) and [`area.wgsl`](src/shaders/area.wgsl) and (when supported) uses `GPUShaderModule.getCompilationInfo()` as a runtime shader compilation smoke-check; see [hello-world/main.ts](examples/hello-world/main.ts).
 
 See [hello-world/main.ts](examples/hello-world/main.ts) for implementation.
 
