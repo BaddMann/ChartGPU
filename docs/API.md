@@ -41,12 +41,13 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
 
 - **`SeriesType`**: `'line' | 'area'`. See [`types.ts`](../src/config/types.ts).
 - **`SeriesConfig`**: `LineSeriesConfig | AreaSeriesConfig` (discriminated by `series.type`). See [`types.ts`](../src/config/types.ts).
-- **`LineSeriesConfig`**: extends the shared series fields with `type: 'line'` and optional `lineStyle?: LineStyleConfig`.
+- **`LineSeriesConfig`**: extends the shared series fields with `type: 'line'`, optional `lineStyle?: LineStyleConfig`, and optional `areaStyle?: AreaStyleConfig`.
+  - When a line series includes `areaStyle`, ChartGPU renders a filled area behind the line (area fills then line strokes). See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
 - **`AreaSeriesConfig`**: extends the shared series fields with `type: 'area'`, optional `baseline?: number`, and optional `areaStyle?: AreaStyleConfig`.
   - **`baseline`** is a data-space “filled area floor”. If omitted, ChartGPU defaults it to the y-axis minimum.
   - **`areaStyle.opacity`** controls the fill opacity.
 
-For a working configuration (including an area series), see [`examples/basic-line/main.ts`](../examples/basic-line/main.ts).
+For a working configuration (including a filled line series via `areaStyle`), see [`examples/basic-line/main.ts`](../examples/basic-line/main.ts).
 
 ### `defaultOptions`
 
@@ -259,7 +260,7 @@ Shader sources: [`line.wgsl`](../src/shaders/line.wgsl) and [`area.wgsl`](../src
 
 #### Area renderer (internal / contributor notes)
 
-A minimal filled-area renderer factory lives in [`createAreaRenderer.ts`](../src/renderers/createAreaRenderer.ts). It renders a triangle-strip fill under a series using [`area.wgsl`](../src/shaders/area.wgsl) and is exercised by the area-series configuration in [`examples/basic-line/main.ts`](../examples/basic-line/main.ts).
+A minimal filled-area renderer factory lives in [`createAreaRenderer.ts`](../src/renderers/createAreaRenderer.ts). It renders a triangle-strip fill under a series using [`area.wgsl`](../src/shaders/area.wgsl) and is exercised by the filled line-series configuration (`areaStyle`) in [`examples/basic-line/main.ts`](../examples/basic-line/main.ts).
 
 - **`createAreaRenderer(device: GPUDevice): AreaRenderer`**
 - **`createAreaRenderer(device: GPUDevice, options?: AreaRendererOptions): AreaRenderer`**

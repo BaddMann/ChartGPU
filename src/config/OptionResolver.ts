@@ -14,9 +14,10 @@ export type ResolvedLineStyleConfig = Readonly<Required<LineStyleConfig>>;
 export type ResolvedAreaStyleConfig = Readonly<Required<AreaStyleConfig>>;
 
 export type ResolvedLineSeriesConfig = Readonly<
-  Omit<LineSeriesConfig, 'color' | 'lineStyle'> & {
+  Omit<LineSeriesConfig, 'color' | 'lineStyle' | 'areaStyle'> & {
     readonly color: string;
     readonly lineStyle: ResolvedLineStyleConfig;
+    readonly areaStyle?: ResolvedAreaStyleConfig;
   }
 >;
 
@@ -108,10 +109,20 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
       opacity: s.lineStyle?.opacity ?? defaultLineStyle.opacity,
     };
 
+    // Avoid leaking the unresolved (user) areaStyle shape via object spread.
+    const { areaStyle: _userAreaStyle, ...rest } = s;
+
     return {
-      ...s,
+      ...rest,
       color,
       lineStyle,
+      ...(s.areaStyle
+        ? {
+            areaStyle: {
+              opacity: s.areaStyle.opacity ?? defaultAreaStyle.opacity,
+            },
+          }
+        : null),
     };
   });
 

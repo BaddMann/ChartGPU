@@ -45,17 +45,13 @@ async function main() {
     palette: ['#4a9eff', '#ff4ab0', '#40d17c'],
     series: [
       {
-        type: 'area',
-        name: 'sin(x) area',
-        data: dataA,
-        color: '#4a9eff',
-        areaStyle: { opacity: 0.2 },
-      },
-      {
         type: 'line',
-        name: 'sin(x)',
+        name: 'sin(x) (filled)',
         data: dataA,
         color: '#4a9eff',
+        // Story 2.4 acceptance: `type: "line"` with `areaStyle` should render
+        // the area fill behind the line stroke.
+        areaStyle: { opacity: 0.2 },
         lineStyle: { width: 2, opacity: 1 },
       },
       {

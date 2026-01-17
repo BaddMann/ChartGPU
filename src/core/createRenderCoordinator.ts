@@ -1,4 +1,4 @@
-import type { ResolvedChartGPUOptions } from '../config/OptionResolver';
+import type { ResolvedAreaSeriesConfig, ResolvedChartGPUOptions } from '../config/OptionResolver';
 import type { DataPoint } from '../config/types';
 import { createDataStore } from '../data/createDataStore';
 import { createAxisRenderer } from '../renderers/createAxisRenderer';
@@ -28,6 +28,11 @@ type Bounds = Readonly<{ xMin: number; xMax: number; yMin: number; yMax: number 
 const DEFAULT_TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
 
 const DEFAULT_BACKGROUND_COLOR: GPUColor = { r: 0.1, g: 0.1, b: 0.15, a: 1.0 };
+
+const assertUnreachable = (value: never): never => {
+  // Intentionally minimal message: this is used for compile-time exhaustiveness.
+  throw new Error(`RenderCoordinator: unreachable value: ${String(value)}`);
+};
 
 const isTupleDataPoint = (p: DataPoint): p is readonly [x: number, y: number] => Array.isArray(p);
 
@@ -221,6 +226,17 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
     lastSeriesCount = nextCount;
   };
 
+  const shouldRenderArea = (series: ResolvedChartGPUOptions['series'][number]): boolean => {
+    switch (series.type) {
+      case 'area':
+        return true;
+      case 'line':
+        return series.areaStyle != null;
+      default:
+        return assertUnreachable(series);
+    }
+  };
+
   const render: RenderCoordinator['render'] = () => {
     assertNotDisposed();
     if (!gpuContext.canvasContext || !gpuContext.canvas) return;
@@ -237,13 +253,35 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
 
     for (let i = 0; i < currentOptions.series.length; i++) {
       const s = currentOptions.series[i];
-      if (s.type === 'area') {
-        const baseline = s.baseline ?? defaultBaseline;
-        areaRenderers[i].prepare(s, s.data, xScale, yScale, baseline);
-      } else {
-        dataStore.setSeries(i, s.data);
-        const buffer = dataStore.getSeriesBuffer(i);
-        lineRenderers[i].prepare(s, buffer, xScale, yScale);
+      switch (s.type) {
+        case 'area': {
+          const baseline = s.baseline ?? defaultBaseline;
+          areaRenderers[i].prepare(s, s.data, xScale, yScale, baseline);
+          break;
+        }
+        case 'line': {
+          // Always prepare the line stroke.
+          dataStore.setSeries(i, s.data);
+          const buffer = dataStore.getSeriesBuffer(i);
+          lineRenderers[i].prepare(s, buffer, xScale, yScale);
+
+          // If `areaStyle` is provided on a line series, render a fill behind it.
+          if (s.areaStyle) {
+            const areaLike: ResolvedAreaSeriesConfig = {
+              type: 'area',
+              name: s.name,
+              data: s.data,
+              color: s.color,
+              areaStyle: s.areaStyle,
+            };
+
+            areaRenderers[i].prepare(areaLike, areaLike.data, xScale, yScale, defaultBaseline);
+          }
+
+          break;
+        }
+        default:
+          assertUnreachable(s);
       }
     }
 
@@ -270,7 +308,7 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
     gridRenderer.render(pass);
 
     for (let i = 0; i < currentOptions.series.length; i++) {
-      if (currentOptions.series[i].type === 'area') {
+      if (shouldRenderArea(currentOptions.series[i])) {
         areaRenderers[i].render(pass);
       }
     }

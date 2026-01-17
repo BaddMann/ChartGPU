@@ -49,6 +49,11 @@ export interface SeriesConfigBase {
 export interface LineSeriesConfig extends SeriesConfigBase {
   readonly type: 'line';
   readonly lineStyle?: LineStyleConfig;
+  /**
+   * Optional filled-area styling for a line series.
+   * When provided, renderers may choose to render a filled area under the line.
+   */
+  readonly areaStyle?: AreaStyleConfig;
 }
 
 export interface AreaSeriesConfig extends SeriesConfigBase {
