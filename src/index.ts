@@ -8,11 +8,13 @@ export const version = '1.0.0';
 export { ChartGPU } from './ChartGPU';
 export type {
   AxisConfig,
+  AxisType,
   ChartGPUOptions,
   DataPoint,
   GridConfig,
   LineStyleConfig,
   SeriesConfig,
+  SeriesType,
 } from './config/types';
 
 // Core exports - Functional API (preferred)
