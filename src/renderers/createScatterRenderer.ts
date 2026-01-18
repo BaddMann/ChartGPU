@@ -114,28 +114,24 @@ const computeClipAffineFromScale = (
   return { a: Number.isFinite(a) ? a : 0, b: Number.isFinite(b) ? b : 0 };
 };
 
-const createTransformMat4Buffer = (ax: number, bx: number, ay: number, by: number): ArrayBuffer => {
+const writeTransformMat4F32 = (out: Float32Array, ax: number, bx: number, ay: number, by: number): void => {
   // Column-major mat4x4 for: clip = M * vec4(x, y, 0, 1)
-  const buffer = new ArrayBuffer(16 * 4);
-  new Float32Array(buffer).set([
-    ax,
-    0,
-    0,
-    0, // col0
-    0,
-    ay,
-    0,
-    0, // col1
-    0,
-    0,
-    1,
-    0, // col2
-    bx,
-    by,
-    0,
-    1, // col3
-  ]);
-  return buffer;
+  out[0] = ax;
+  out[1] = 0;
+  out[2] = 0;
+  out[3] = 0; // col0
+  out[4] = 0;
+  out[5] = ay;
+  out[6] = 0;
+  out[7] = 0; // col1
+  out[8] = 0;
+  out[9] = 0;
+  out[10] = 1;
+  out[11] = 0; // col2
+  out[12] = bx;
+  out[13] = by;
+  out[14] = 0;
+  out[15] = 1; // col3
 };
 
 const computePlotScissorDevicePx = (
@@ -173,6 +169,11 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
   // VSUniforms: mat4x4 (64) + viewportPx vec2 (8) + pad vec2 (8) = 80 bytes.
   const vsUniformBuffer = createUniformBuffer(device, 80, { label: 'scatterRenderer/vsUniforms' });
   const fsUniformBuffer = createUniformBuffer(device, 16, { label: 'scatterRenderer/fsUniforms' });
+
+  // Reused CPU-side staging for uniform writes (avoid per-frame allocations).
+  const vsUniformScratchBuffer = new ArrayBuffer(80);
+  const vsUniformScratchF32 = new Float32Array(vsUniformScratchBuffer);
+  const fsUniformScratchF32 = new Float32Array(4);
 
   const bindGroup = device.createBindGroup({
     layout: bindGroupLayout,
@@ -234,16 +235,23 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     cpuInstanceStagingF32 = new Float32Array(cpuInstanceStagingBuffer);
   };
 
-  const writeVsUniforms = (transformMat4: ArrayBuffer, viewportW: number, viewportH: number): void => {
+  const writeVsUniforms = (
+    ax: number,
+    bx: number,
+    ay: number,
+    by: number,
+    viewportW: number,
+    viewportH: number
+  ): void => {
     const w = Number.isFinite(viewportW) && viewportW > 0 ? viewportW : 1;
     const h = Number.isFinite(viewportH) && viewportH > 0 ? viewportH : 1;
 
-    const buf = new ArrayBuffer(80);
-    const f32 = new Float32Array(buf);
-    f32.set(new Float32Array(transformMat4), 0);
-    f32[16] = w;
-    f32[17] = h;
-    writeUniformBuffer(device, vsUniformBuffer, buf);
+    writeTransformMat4F32(vsUniformScratchF32, ax, bx, ay, by);
+    vsUniformScratchF32[16] = w;
+    vsUniformScratchF32[17] = h;
+    vsUniformScratchF32[18] = 0;
+    vsUniformScratchF32[19] = 0;
+    writeUniformBuffer(device, vsUniformBuffer, vsUniformScratchBuffer);
 
     lastViewportPx = [w, h];
   };
@@ -254,23 +262,24 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     const { xMin, xMax, yMin, yMax } = computeDataBounds(data);
     const { a: ax, b: bx } = computeClipAffineFromScale(xScale, xMin, xMax);
     const { a: ay, b: by } = computeClipAffineFromScale(yScale, yMin, yMax);
-    const transformBuffer = createTransformMat4Buffer(ax, bx, ay, by);
 
     if (gridArea) {
       lastCanvasWidth = gridArea.canvasWidth;
       lastCanvasHeight = gridArea.canvasHeight;
-      writeVsUniforms(transformBuffer, gridArea.canvasWidth, gridArea.canvasHeight);
+      writeVsUniforms(ax, bx, ay, by, gridArea.canvasWidth, gridArea.canvasHeight);
       lastScissor = computePlotScissorDevicePx(gridArea);
     } else {
       // Backward-compatible: keep rendering with the last known viewport (or safe default).
-      writeVsUniforms(transformBuffer, lastViewportPx[0], lastViewportPx[1]);
+      writeVsUniforms(ax, bx, ay, by, lastViewportPx[0], lastViewportPx[1]);
       lastScissor = null;
     }
 
     const [r, g, b, a] = parseSeriesColorToRgba01(seriesConfig.color);
-    const colorBuffer = new ArrayBuffer(4 * 4);
-    new Float32Array(colorBuffer).set([r, g, b, clamp01(a)]);
-    writeUniformBuffer(device, fsUniformBuffer, colorBuffer);
+    fsUniformScratchF32[0] = r;
+    fsUniformScratchF32[1] = g;
+    fsUniformScratchF32[2] = b;
+    fsUniformScratchF32[3] = clamp01(a);
+    writeUniformBuffer(device, fsUniformBuffer, fsUniformScratchF32);
 
     const dpr = window.devicePixelRatio || 1;
     const hasValidDpr = dpr > 0 && Number.isFinite(dpr);

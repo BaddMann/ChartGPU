@@ -117,6 +117,8 @@ The `scatter` example demonstrates instanced scatter rendering with thousands of
 
 The `grouped-bar` example demonstrates clustered + stacked bar rendering (via `series[i].stack`, including negative values) and bar layout options (`barWidth`, `barGap`, `barCategoryGap`). See [grouped-bar/main.ts](../examples/grouped-bar/main.ts).
 
+The `sampling` example demonstrates cartesian series sampling with x-axis data zoom: as the percent-space zoom window \([0, 100]\) changes, ChartGPU resamples the **visible x-range** from raw (unsampled) data (debounced ~100ms). Axis auto-bounds remain derived from raw (unsampled) series data unless you set explicit axis `min`/`max`. See [sampling/main.ts](../examples/sampling/main.ts), [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts), and [`createZoomState.ts`](../src/interaction/createZoomState.ts).
+
 The `pie` example demonstrates pie/donut rendering and per-slice `PieDataItem.color?: string`. See [pie/main.ts](../examples/pie/main.ts) and the option types in [`types.ts`](../src/config/types.ts).
 
 The `interactive` example demonstrates two vertically stacked charts with synced interaction (via `connectCharts(...)`), axis-trigger tooltip mode (`ChartGPUOptions.tooltip.trigger = 'axis'`) with a custom formatter, and click logging. See [interactive/main.ts](../examples/interactive/main.ts) and [createChartSync.ts](../src/interaction/createChartSync.ts).
@@ -129,6 +131,7 @@ To run examples:
 ## Acceptance checks
 
 - Run `npm run acceptance:zoom-state` to execute the zoom window state manager acceptance checks in [`examples/acceptance/zoom-state.ts`](../examples/acceptance/zoom-state.ts) (validates percent-range clamping/order, zoom/pan behavior, and change notification semantics for [`createZoomState.ts`](../src/interaction/createZoomState.ts)).
+- Run `npm run acceptance:lttb-sample` to execute CPU LTTB downsampling acceptance checks in [`examples/acceptance/lttb-sample.ts`](../examples/acceptance/lttb-sample.ts) (validates that 100K → 1K sampling preserves peaks/valleys on a synthetic dataset; exercises the internal [`lttbSample`](../src/data/lttbSample.ts) helper).
 
 ## API Reference
 

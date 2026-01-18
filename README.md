@@ -13,6 +13,7 @@ ChartGPU leverages WebGPU to provide hardware-accelerated rendering for complex 
 - **High Performance**: Optimized for rendering large datasets
 - **Browser Support**: Works in Chrome 113+, Edge 113+, and Safari 18+
 - **Data zoom (x-axis)**: inside zoom gestures and optional slider UI via `ChartGPUOptions.dataZoom` (see [API.md](docs/API.md) and [ChartGPU.ts](src/ChartGPU.ts))
+- **Zoom-aware sampling (cartesian)**: when sampling is enabled, ChartGPU resamples the visible x-range on zoom (debounced ~100ms). Axis auto-bounds remain derived from raw (unsampled) series data. See [API.md](docs/API.md).
 
 ## Installation
 
@@ -46,6 +47,7 @@ Options are defined by [`ChartGPUOptions`](src/config/types.ts). Baseline defaul
 - **Palette / series colors**: `ChartGPUOptions.palette` overrides the resolved theme palette (`resolvedOptions.theme.colorPalette`), and default series colors come from `resolvedOptions.theme.colorPalette[i % ...]` when `series[i].color` is missing. Theme also drives background/grid/axis colors during rendering; see [`createRenderCoordinator.ts`](src/core/createRenderCoordinator.ts).
 - **Data points**: `series[i].data` accepts `DataPoint` as either a tuple (`[x, y]`) or an object (`{ x, y }`). See [`types.ts`](src/config/types.ts).
 - **Series types**: `SeriesType` is `'line' | 'area' | 'bar' | 'scatter' | 'pie'`, and `series` is a discriminated union (`LineSeriesConfig | AreaSeriesConfig | BarSeriesConfig | ScatterSeriesConfig | PieSeriesConfig`). See [`types.ts`](src/config/types.ts). Note: pie series are non-cartesian and do not participate in cartesian x/y bounds derivation or cartesian hit-testing; see [`createRenderCoordinator.ts`](src/core/createRenderCoordinator.ts), [`findNearestPoint.ts`](src/interaction/findNearestPoint.ts), and [`findPointsAtX.ts`](src/interaction/findPointsAtX.ts).
+- **Series sampling (cartesian)**: cartesian series support `sampling?: 'none' | 'lttb' | 'average' | 'max' | 'min'` and `samplingThreshold?: number` (defaults: `sampling: 'lttb'`, `samplingThreshold: 5000` via [`resolveOptions`](src/config/OptionResolver.ts)). Sampling affects rendering and cartesian hit-testing only; axis auto-bounds are derived from raw (unsampled) series data unless you set explicit axis min/max (see [`createRenderCoordinator.ts`](src/core/createRenderCoordinator.ts)). When x-axis data zoom is enabled, sampling is re-applied against the **visible x-range** (percent-space zoom window in \([0, 100]\)); resampling is **debounced (~100ms)** (see [`createRenderCoordinator.ts`](src/core/createRenderCoordinator.ts)). Pie series do not support these fields.
   - **Line / area**: area series support `baseline?: number` (defaults to the y-axis minimum when omitted) and `areaStyle?: { opacity?: number }`. Line series can also include `areaStyle?: { opacity?: number }` to render a filled area behind the line (area fills then line strokes). See [`createRenderCoordinator.ts`](src/core/createRenderCoordinator.ts) and [`examples/basic-line/main.ts`](examples/basic-line/main.ts).
   - **Bar (implemented)**: bar series render as clustered bars per x-category. If multiple bar series share the same **non-empty** `stack` id (`series[i].stack`), they render as stacked segments within the same cluster slot. Layout options include `barWidth` (CSS px or % of category width), `barGap` (ratio gap between bars within a category), and `barCategoryGap` (ratio gap between categories). See [`types.ts`](src/config/types.ts), [`createBarRenderer.ts`](src/renderers/createBarRenderer.ts), [`bar.wgsl`](src/shaders/bar.wgsl), and coordinator wiring in [`createRenderCoordinator.ts`](src/core/createRenderCoordinator.ts). For an example, see [`examples/grouped-bar/`](examples/grouped-bar/).
 - **Tooltip configuration**: `ChartGPUOptions.tooltip?: TooltipConfig` supports `trigger?: 'item' | 'axis'` and `formatter?: (params: TooltipParams | TooltipParams[]) => string`. `TooltipParams` includes `seriesName`, `seriesIndex`, `dataIndex`, `value`, and `color` and is exported from the public entrypoint [`src/index.ts`](src/index.ts). See [`types.ts`](src/config/types.ts) and tooltip rendering behavior in [`createRenderCoordinator.ts`](src/core/createRenderCoordinator.ts) (uses the internal DOM tooltip overlay helper [`createTooltip.ts`](src/components/createTooltip.ts)); see also [`docs/API.md`](docs/API.md).
@@ -105,6 +107,7 @@ Run `npm run build` to compile TypeScript and build the library.
 ### Acceptance checks
 
 - Run `npm run acceptance:zoom-state` to execute the zoom window state manager acceptance checks in [`examples/acceptance/zoom-state.ts`](examples/acceptance/zoom-state.ts) (covers clamping/order, zoom/pan behavior, and `onChange` emission semantics for [`createZoomState.ts`](src/interaction/createZoomState.ts)).
+- Run `npm run acceptance:lttb-sample` to execute CPU LTTB downsampling acceptance checks in [`examples/acceptance/lttb-sample.ts`](examples/acceptance/lttb-sample.ts) (validates that 100K → 1K sampling preserves peaks/valleys on a synthetic dataset; exercises the internal [`lttbSample`](src/data/lttbSample.ts) helper).
 
 ### Development Mode
 
@@ -120,6 +123,8 @@ The `grid-test` example demonstrates matching a renderer pipeline’s target for
 
 The `grouped-bar` example demonstrates clustered + stacked bars (via `series[i].stack`, including negative values) and bar layout options (`barWidth`, `barGap`, `barCategoryGap`). See [grouped-bar/main.ts](examples/grouped-bar/main.ts).
 
+The `sampling` example demonstrates zoom-aware sampling for cartesian series when using `ChartGPUOptions.dataZoom` (percent-space \([0, 100]\)), including debounced resampling of the visible range. See [sampling/main.ts](examples/sampling/main.ts).
+
 The `pie` example demonstrates pie/donut rendering and per-slice `PieDataItem.color?: string`. See [pie/main.ts](examples/pie/main.ts) and the option types in [`types.ts`](src/config/types.ts).
 
 The `interactive` example demonstrates two stacked charts with synced crosshair/tooltip interaction (via `connectCharts(...)`), axis-trigger tooltips showing all series values at the hovered x, a custom tooltip formatter, and click logging. See [interactive/main.ts](examples/interactive/main.ts).
@@ -134,7 +139,7 @@ Contributions are welcome! Please ensure all code follows the project's TypeScri
 
 ### Internal data and buffers
 
-Chart data uploads and per-series GPU vertex buffer caching are handled by an internal `DataStore` created via `createDataStore(device)`. See [`createDataStore.ts`](src/data/createDataStore.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`).
+Chart data uploads and per-series GPU vertex buffer caching are handled by an internal `DataStore` created via `createDataStore(device)`. See [`createDataStore.ts`](src/data/createDataStore.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`). Buffers grow geometrically to reduce reallocations on incremental growth.
 
 - **`setSeries(index, data)`**: packs `DataPoint` (tuple `[x, y]` or object `{ x, y }`) into a tightly-packed `Float32Array` (x, y) and reuploads/reallocates only when the data changes
 - **`getSeriesBuffer(index)`**: returns the cached GPU vertex buffer for a series (throws if the series hasn’t been set)

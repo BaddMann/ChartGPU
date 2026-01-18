@@ -84,31 +84,24 @@ const computeClipAffineFromScale = (
   return { a: Number.isFinite(a) ? a : 0, b: Number.isFinite(b) ? b : 0 };
 };
 
-const createTransformMat4Buffer = (ax: number, bx: number, ay: number, by: number): ArrayBuffer => {
+const writeTransformMat4F32 = (out: Float32Array, ax: number, bx: number, ay: number, by: number): void => {
   // Column-major mat4x4 for: clip = M * vec4(x, y, 0, 1)
-  //
-  // Note: We allocate an explicit `ArrayBuffer` so it typechecks cleanly with
-  // `@webgpu/types` (avoids `ArrayBufferLike`/`SharedArrayBuffer` issues).
-  const buffer = new ArrayBuffer(16 * 4);
-  new Float32Array(buffer).set([
-    ax,
-    0,
-    0,
-    0, // col0
-    0,
-    ay,
-    0,
-    0, // col1
-    0,
-    0,
-    1,
-    0, // col2
-    bx,
-    by,
-    0,
-    1, // col3
-  ]);
-  return buffer;
+  out[0] = ax;
+  out[1] = 0;
+  out[2] = 0;
+  out[3] = 0; // col0
+  out[4] = 0;
+  out[5] = ay;
+  out[6] = 0;
+  out[7] = 0; // col1
+  out[8] = 0;
+  out[9] = 0;
+  out[10] = 1;
+  out[11] = 0; // col2
+  out[12] = bx;
+  out[13] = by;
+  out[14] = 0;
+  out[15] = 1; // col3
 };
 
 export function createLineRenderer(device: GPUDevice, options?: LineRendererOptions): LineRenderer {
@@ -124,6 +117,11 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
 
   const vsUniformBuffer = createUniformBuffer(device, 64, { label: 'lineRenderer/vsUniforms' });
   const fsUniformBuffer = createUniformBuffer(device, 16, { label: 'lineRenderer/fsUniforms' });
+
+  // Reused CPU-side staging for uniform writes (avoid per-frame allocations).
+  const vsUniformScratchBuffer = new ArrayBuffer(64);
+  const vsUniformScratchF32 = new Float32Array(vsUniformScratchBuffer);
+  const fsUniformScratchF32 = new Float32Array(4);
 
   const bindGroup = device.createBindGroup({
     layout: bindGroupLayout,
@@ -179,14 +177,16 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     const { a: ax, b: bx } = computeClipAffineFromScale(xScale, xMin, xMax);
     const { a: ay, b: by } = computeClipAffineFromScale(yScale, yMin, yMax);
 
-    const transformBuffer = createTransformMat4Buffer(ax, bx, ay, by);
-    writeUniformBuffer(device, vsUniformBuffer, transformBuffer);
+    writeTransformMat4F32(vsUniformScratchF32, ax, bx, ay, by);
+    writeUniformBuffer(device, vsUniformBuffer, vsUniformScratchBuffer);
 
     const [r, g, b, a] = parseSeriesColorToRgba01(seriesConfig.color);
     const opacity = clamp01(seriesConfig.lineStyle.opacity);
-    const colorBuffer = new ArrayBuffer(4 * 4);
-    new Float32Array(colorBuffer).set([r, g, b, clamp01(a * opacity)]);
-    writeUniformBuffer(device, fsUniformBuffer, colorBuffer);
+    fsUniformScratchF32[0] = r;
+    fsUniformScratchF32[1] = g;
+    fsUniformScratchF32[2] = b;
+    fsUniformScratchF32[3] = clamp01(a * opacity);
+    writeUniformBuffer(device, fsUniformBuffer, fsUniformScratchF32);
   };
 
   const render: LineRenderer['render'] = (passEncoder) => {

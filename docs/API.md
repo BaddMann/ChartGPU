@@ -110,6 +110,7 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
 
 - **`SeriesType`**: `'line' | 'area' | 'bar' | 'scatter' | 'pie'`. See [`types.ts`](../src/config/types.ts).
 - **`SeriesConfig`**: `LineSeriesConfig | AreaSeriesConfig | BarSeriesConfig | ScatterSeriesConfig | PieSeriesConfig` (discriminated by `series.type`). See [`types.ts`](../src/config/types.ts).
+- **Sampling (cartesian series only)**: cartesian series support optional `sampling?: 'none' | 'lttb' | 'average' | 'max' | 'min'` and optional `samplingThreshold?: number` (applied when the input series data length exceeds the threshold). When omitted, defaults are `sampling: 'lttb'` and `samplingThreshold: 5000` via [`resolveOptions`](../src/config/OptionResolver.ts) and baseline defaults in [`defaults.ts`](../src/config/defaults.ts). Sampling affects rendering and cartesian hit-testing only; axis auto-bounds are derived from raw (unsampled) series data unless you set `xAxis.min`/`xAxis.max` or `yAxis.min`/`yAxis.max` (see [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts)). When x-axis data zoom is enabled, sampling is re-applied against the **visible x-range** (from the percent-space zoom window in \([0, 100]\)) using raw data; resampling is **debounced (~100ms)** during zoom changes (see [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts)). Pie series (`type: 'pie'`) do not support these fields (pie is non-cartesian).
 - **`LineSeriesConfig`**: extends the shared series fields with `type: 'line'`, optional `lineStyle?: LineStyleConfig`, and optional `areaStyle?: AreaStyleConfig`.
   - When a line series includes `areaStyle`, ChartGPU renders a filled area behind the line (area fills then line strokes). See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
 - **`AreaSeriesConfig`**: extends the shared series fields with `type: 'area'`, optional `baseline?: number`, and optional `areaStyle?: AreaStyleConfig`.
@@ -149,6 +150,7 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
 
 - **`ChartGPUOptions.dataZoom?: ReadonlyArray<DataZoomConfig>`**: optional data-zoom configuration list. See [`ChartGPUOptions`](../src/config/types.ts) and [`DataZoomConfig`](../src/config/types.ts).
 - **Runtime behavior (current)**: data zoom controls a shared percent-space zoom window `{ start, end }` in \([0, 100]\) that is applied to the effective x-domain for both rendering and pointer interaction. See the x-domain application in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) and percent-space semantics in [`createZoomState.ts`](../src/interaction/createZoomState.ts).
+  - **Zoom-aware sampling (cartesian)**: when a cartesian series has sampling enabled, ChartGPU resamples from raw (unsampled) series data over the current visible x-range; resampling is debounced (~100ms) to avoid churn during wheel/drag zoom updates. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
   - **Inside zoom**: when `ChartGPUOptions.dataZoom` includes `{ type: 'inside' }`, ChartGPU enables an internal wheel/drag interaction. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) and [`createInsideZoom.ts`](../src/interaction/createInsideZoom.ts).
   - **Zoom gesture**: mouse wheel zoom, centered on the current cursor x-position (only when the pointer is inside the plot grid).
   - **Pan gesture**: shift+left-drag or middle-mouse drag pans left/right (only when the pointer is inside the plot grid).
@@ -383,7 +385,22 @@ All WebGPU types are provided by `@webgpu/types`. See [GPUContext.ts](../src/cor
 
 ## Internal modules (Contributor notes)
 
-Chart data uploads and per-series GPU vertex buffer caching are handled by the internal `createDataStore(device)` helper. See [`createDataStore.ts`](../src/data/createDataStore.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`).
+Chart data uploads and per-series GPU vertex buffer caching are handled by the internal `createDataStore(device)` helper. See [`createDataStore.ts`](../src/data/createDataStore.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`). **Buffers grow geometrically** to reduce reallocations when data grows incrementally.
+
+### GPU buffer streaming (internal / contributor notes)
+
+For frequently-updated dynamic geometry (e.g. interaction overlays), ChartGPU includes an internal streaming buffer helper that uses **double-buffering** (alternates two `GPUBuffer`s) to avoid writing into a buffer the GPU may still be reading, and uses `device.queue.writeBuffer(...)` with **partial range updates when possible**.
+
+See [`createStreamBuffer.ts`](../src/data/createStreamBuffer.ts) for the helper API (`createStreamBuffer(device, maxSizeBytes)` returning `{ write, getBuffer, getVertexCount, dispose }`) and current usage in [`createCrosshairRenderer.ts`](../src/renderers/createCrosshairRenderer.ts).
+
+### CPU downsampling (internal / contributor notes)
+
+ChartGPU includes a small CPU-side Largest Triangle Three Buckets (LTTB) downsampler intended for internal tooling/acceptance checks and offline preprocessing. See [`lttbSample.ts`](../src/data/lttbSample.ts). This helper is currently **internal-only** (not exported from the public entrypoint `src/index.ts`).
+
+- **Function**: `lttbSample(data, targetPoints)`
+- **Overloads (high-level)**:
+  - `lttbSample(data: ReadonlyArray<DataPoint>, targetPoints: number): ReadonlyArray<DataPoint>`
+  - `lttbSample(data: Float32Array, targetPoints: number): Float32Array` where the input is interleaved `[x, y]` pairs (`[x0, y0, x1, y1, ...]`)
 
 ### Interaction utilities (internal / contributor notes)
 
@@ -573,6 +590,7 @@ Shared WebGPU renderer helpers live in [`rendererUtils.ts`](../src/renderers/ren
   - **Fragment targets convenience**: provide `fragment.formats` (one or many formats) instead of full `fragment.targets` to generate `GPUColorTargetState[]` (optionally with shared `blend` / `writeMask`).
 - **`createUniformBuffer(device, size, options?)`**: creates a `GPUBuffer` with usage `UNIFORM | COPY_DST`, aligning size (defaults to 16-byte alignment).
 - **`writeUniformBuffer(device, buffer, data)`**: writes `BufferSource` data at offset 0 via `device.queue.writeBuffer(...)`.
+- **Uniform packing (perf)**: several renderers reuse small scratch typed arrays for uniform packing to avoid per-frame allocations; see [`createLineRenderer.ts`](../src/renderers/createLineRenderer.ts), [`createAreaRenderer.ts`](../src/renderers/createAreaRenderer.ts), [`createScatterRenderer.ts`](../src/renderers/createScatterRenderer.ts), and [`createPieRenderer.ts`](../src/renderers/createPieRenderer.ts).
 
 #### Line renderer (internal / contributor notes)
 
