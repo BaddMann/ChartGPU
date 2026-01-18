@@ -385,6 +385,15 @@ All WebGPU types are provided by `@webgpu/types`. See [GPUContext.ts](../src/cor
 
 Chart data uploads and per-series GPU vertex buffer caching are handled by the internal `createDataStore(device)` helper. See [`createDataStore.ts`](../src/data/createDataStore.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`).
 
+### CPU downsampling (internal / contributor notes)
+
+ChartGPU includes a small CPU-side Largest Triangle Three Buckets (LTTB) downsampler intended for internal tooling/acceptance checks and offline preprocessing. See [`lttbSample.ts`](../src/data/lttbSample.ts). This helper is currently **internal-only** (not exported from the public entrypoint `src/index.ts`).
+
+- **Function**: `lttbSample(data, targetPoints)`
+- **Overloads (high-level)**:
+  - `lttbSample(data: ReadonlyArray<DataPoint>, targetPoints: number): ReadonlyArray<DataPoint>`
+  - `lttbSample(data: Float32Array, targetPoints: number): Float32Array` where the input is interleaved `[x, y]` pairs (`[x0, y0, x1, y1, ...]`)
+
 ### Interaction utilities (internal / contributor notes)
 
 Interaction helpers live in [`src/interaction/`](../src/interaction/). These modules are currently internal (not exported from the public entrypoint `src/index.ts`).
