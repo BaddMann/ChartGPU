@@ -99,6 +99,7 @@ const createOptions = (
   tooltip: { trigger: 'item' },
   dataZoom: [{ type: 'inside' }, { type: 'slider' }],
   palette: ['#4a9eff'],
+  animation: { duration: 900, easing: 'cubicOut', delay: 0 },
   series: [
     {
       type: 'line',

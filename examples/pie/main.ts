@@ -60,6 +60,7 @@ const createOptions = (
     yAxis: { type: 'value', min: 0, max: 1, tickLength: 0, name: '' },
     tooltip: { show: true, trigger: 'item' },
     theme,
+    animation: { duration: 900, easing: 'cubicOut', delay: 0 },
     series: [
       {
         type: 'pie',

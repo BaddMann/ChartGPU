@@ -43,6 +43,7 @@ const createBaseOptions = (data: ReadonlyArray<DataPoint>, autoScroll: boolean):
   autoScroll,
   dataZoom: [{ type: 'inside' }, { type: 'slider', start: 70, end: 100 }],
   palette: ['#4a9eff'],
+  animation: false,
   series: [
     {
       type: 'line',

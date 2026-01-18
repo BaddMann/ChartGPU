@@ -45,6 +45,7 @@ async function main() {
     xAxis: { type: 'value', min: 0, max: xMax, name: 'Angle (rad)' },
     yAxis: { type: 'value', min: -1.1, max: 1.1, name: 'Amplitude' },
     palette: ['#4a9eff', '#ff4ab0', '#40d17c'],
+    animation: { duration: 900, easing: 'cubicOut', delay: 0 },
     series: [
       {
         type: 'line',
