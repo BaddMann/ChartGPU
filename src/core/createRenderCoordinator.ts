@@ -598,7 +598,15 @@ export function createRenderCoordinator(
       return;
     }
 
-    if (zoomState) return;
+    if (zoomState) {
+      // Sync range if config changed
+      const currentRange = zoomState.getRange();
+      if (currentRange.start !== cfg.start || currentRange.end !== cfg.end) {
+        zoomState.setRange(cfg.start, cfg.end);
+        // onChange subscription will trigger requestRender()
+      }
+      return;
+    }
 
     zoomState = createZoomState(cfg.start, cfg.end);
     unsubscribeZoom = zoomState.onChange(() => {

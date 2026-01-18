@@ -151,7 +151,8 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
   - **Pan gesture**: shift+left-drag or middle-mouse drag pans left/right (only when the pointer is inside the plot grid).
   - **Scope**: x-axis only (the zoom window is applied to the x-domain; y-domain is unchanged).
   - **Grid-only**: input is ignored outside the plot grid (respects `grid` margins).
-  - **UI**: no slider UI is currently implemented (`type: 'slider'` is type-only).
+  - **UI (ChartGPU)**: ChartGPU does not currently mount a slider UI automatically (`type: 'slider'` is still type-only for the chart runtime).
+  - **UI helper (internal)**: a standalone internal DOM helper exists for a slider UI: [`createDataZoomSlider.ts`](../src/components/createDataZoomSlider.ts). It is not exported from the public entrypoint and is not auto-wired into `ChartGPU` / the render coordinator.
   - **Config fields (current)**: `start` / `end` are used as the initial percent window (defaulting to `0` / `100` when omitted). Other fields (`xAxisIndex`, `minSpan`, `maxSpan`) are currently accepted by the type and preserved by option resolution, but are not yet applied by the runtime zoom path.
 - **`DataZoomConfig`**: data zoom configuration type. See [`DataZoomConfig`](../src/config/types.ts).
   - **`type: 'inside' | 'slider'`**
@@ -518,6 +519,16 @@ An internal DOM helper for rendering an HTML tooltip above the canvas. See [`cre
 - **Pointer events**: the tooltip uses `pointer-events: none` so it won’t intercept mouse/touch input.
 
 For default `innerHTML`-safe tooltip content formatting helpers (item + axis trigger modes), see [`formatTooltip.ts`](../src/components/formatTooltip.ts).
+
+### Data zoom slider (internal / contributor notes)
+
+A standalone internal DOM helper for rendering a slider-style x-zoom UI in normal HTML layout flow (it is appended below the chart container; it is not an overlay). See [`createDataZoomSlider.ts`](../src/components/createDataZoomSlider.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`) and is not auto-mounted by `ChartGPU` / the render coordinator.
+
+- **Factory**: `createDataZoomSlider(container: HTMLElement, zoomState: ZoomState, options?: DataZoomSliderOptions): DataZoomSlider`
+- **`DataZoomSlider` methods (essential)**:
+  - `update(theme: ThemeConfig): void`
+  - `dispose(): void`
+- **Inputs (zoom window semantics)**: `zoomState` is a percent-space window `{ start, end }` in \([0, 100]\) (ordered and clamped by the zoom state manager). See [`createZoomState.ts`](../src/interaction/createZoomState.ts).
 
 ### Render coordinator (internal / contributor notes)
 
