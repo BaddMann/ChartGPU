@@ -132,6 +132,7 @@ To run examples:
 
 - Run `npm run acceptance:zoom-state` to execute the zoom window state manager acceptance checks in [`examples/acceptance/zoom-state.ts`](../examples/acceptance/zoom-state.ts) (validates percent-range clamping/order, zoom/pan behavior, and change notification semantics for [`createZoomState.ts`](../src/interaction/createZoomState.ts)).
 - Run `npm run acceptance:lttb-sample` to execute CPU LTTB downsampling acceptance checks in [`examples/acceptance/lttb-sample.ts`](../examples/acceptance/lttb-sample.ts) (validates that 100K → 1K sampling preserves peaks/valleys on a synthetic dataset; exercises the internal [`lttbSample`](../src/data/lttbSample.ts) helper).
+- Run `npm run acceptance:easing` to execute easing function acceptance checks in [`examples/acceptance/easing.ts`](../examples/acceptance/easing.ts) (validates endpoints, clamping, and output range for easing functions implemented in [`easing.ts`](../src/utils/easing.ts)).
 
 ## API Reference
 
