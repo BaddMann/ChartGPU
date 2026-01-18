@@ -36,6 +36,7 @@ async function main() {
     yAxis: { type: 'value', min: -6, max: 10, name: 'Value (y)' },
     palette: ['#4a9eff', '#ff4ab0', '#40d17c'],
     tooltip: { show: true, trigger: 'axis' },
+    animation: { duration: 900, easing: 'cubicOut', delay: 0 },
     series: [
       {
         type: 'bar',

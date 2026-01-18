@@ -88,6 +88,7 @@ async function main() {
     xAxis: { type: 'value', min: xMin, max: xMax, name: 'X' },
     yAxis: { type: 'value', min: yMin, max: yMax, name: 'Y' },
     palette: ['#4a9eff', '#ff4ab0', '#40d17c'],
+    animation: { duration: 900, easing: 'cubicOut', delay: 0 },
     series: [
       {
         type: 'scatter',

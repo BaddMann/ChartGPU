@@ -33,6 +33,7 @@ const createOptions = (title: string, data: ReadonlyArray<DataPoint>, color: str
     yAxis: { type: 'value', min: -1.2, max: 1.2, name: title },
     palette: [color],
     tooltip: { trigger: 'axis' },
+    animation: { duration: 900, easing: 'cubicOut', delay: 0 },
     series: [
       {
         type: 'line',

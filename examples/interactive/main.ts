@@ -125,6 +125,7 @@ const createOptions = (
     palette,
     tooltip: { trigger: 'axis', formatter: axisTooltipFormatter },
     dataZoom: [{ type: 'inside' }, { type: 'slider' }],
+    animation: { duration: 900, easing: 'cubicOut', delay: 0 },
     series: [
       {
         type: 'line',
