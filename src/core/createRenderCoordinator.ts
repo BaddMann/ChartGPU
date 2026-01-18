@@ -538,6 +538,8 @@ export function createRenderCoordinator(
         return true;
       case 'line':
         return series.areaStyle != null;
+      case 'bar':
+        return false;
       default:
         return assertUnreachable(series);
     }
@@ -775,6 +777,10 @@ export function createRenderCoordinator(
             areaRenderers[i].prepare(areaLike, areaLike.data, xScale, yScale, defaultBaseline);
           }
 
+          break;
+        }
+        case 'bar': {
+          // Rendering is not implemented yet; allow configs to typecheck.
           break;
         }
         default:
