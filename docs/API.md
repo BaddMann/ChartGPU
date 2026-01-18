@@ -189,6 +189,7 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
   - **Disablement**: set to `false` to disable all animation.
   - **Defaults**: when enabled, `AnimationConfig.duration` defaults to `300`ms when omitted.
 - **`AnimationConfig`**: supports optional `duration?: number` (ms), `easing?: 'linear' | 'cubicOut' | 'cubicInOut' | 'bounceOut'`, and `delay?: number` (ms). See [`types.ts`](../src/config/types.ts).
+  - **Built-in easing implementations (internal)**: see [`easing.ts`](../src/utils/easing.ts) and the name→function helper `getEasing(...)`.
 
 **`TooltipParams` (public export):** exported from the public entrypoint [`src/index.ts`](../src/index.ts) and defined in [`types.ts`](../src/config/types.ts).
 
