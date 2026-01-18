@@ -30,6 +30,8 @@ See [ChartGPU.ts](../src/ChartGPU.ts) for the full interface and lifecycle behav
 - `setInteractionX(x: number | null, source?: unknown): void`: drives the chart’s crosshair/tooltip interaction from a domain x value; pass `null` to clear. See [`ChartGPU.ts`](../src/ChartGPU.ts) and the internal implementation in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
 - `setCrosshairX(x: number | null, source?: unknown): void`: alias for `setInteractionX(...)` with chart-sync semantics (external crosshair/tooltip control); `x` is in domain units and `null` clears. See [`ChartGPU.ts`](../src/ChartGPU.ts).
 - `onInteractionXChange(callback: (x: number | null, source?: unknown) => void): () => void`: subscribes to interaction x updates and returns an unsubscribe function. See [`ChartGPU.ts`](../src/ChartGPU.ts).
+- `getZoomRange(): { start: number; end: number } | null`: returns the current percent-space zoom window in \([0, 100]\), or `null` when data zoom is disabled. See [`ChartGPU.ts`](../src/ChartGPU.ts) and percent-space semantics in [`createZoomState.ts`](../src/interaction/createZoomState.ts).
+- `setZoomRange(start: number, end: number): void`: sets the percent-space zoom window (ordered/clamped to \([0, 100]\)); no-op when data zoom is disabled. See [`ChartGPU.ts`](../src/ChartGPU.ts) and percent-space semantics in [`createZoomState.ts`](../src/interaction/createZoomState.ts).
 
 Data upload and scale/bounds derivation occur during [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) `RenderCoordinator.render()` (not during `setOption(...)` itself).
 
@@ -146,12 +148,14 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
 **Data zoom (type definitions):**
 
 - **`ChartGPUOptions.dataZoom?: ReadonlyArray<DataZoomConfig>`**: optional data-zoom configuration list. See [`ChartGPUOptions`](../src/config/types.ts) and [`DataZoomConfig`](../src/config/types.ts).
-- **Runtime behavior (current)**: when `ChartGPUOptions.dataZoom` includes `{ type: 'inside' }`, ChartGPU enables an internal “inside zoom” interaction that updates the effective x-domain used for rendering and pointer interaction. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) and the handler implementation in [`createInsideZoom.ts`](../src/interaction/createInsideZoom.ts).
+- **Runtime behavior (current)**: data zoom controls a shared percent-space zoom window `{ start, end }` in \([0, 100]\) that is applied to the effective x-domain for both rendering and pointer interaction. See the x-domain application in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) and percent-space semantics in [`createZoomState.ts`](../src/interaction/createZoomState.ts).
+  - **Inside zoom**: when `ChartGPUOptions.dataZoom` includes `{ type: 'inside' }`, ChartGPU enables an internal wheel/drag interaction. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) and [`createInsideZoom.ts`](../src/interaction/createInsideZoom.ts).
   - **Zoom gesture**: mouse wheel zoom, centered on the current cursor x-position (only when the pointer is inside the plot grid).
   - **Pan gesture**: shift+left-drag or middle-mouse drag pans left/right (only when the pointer is inside the plot grid).
   - **Scope**: x-axis only (the zoom window is applied to the x-domain; y-domain is unchanged).
   - **Grid-only**: input is ignored outside the plot grid (respects `grid` margins).
-  - **UI**: no slider UI is currently implemented (`type: 'slider'` is type-only).
+  - **Slider UI**: when `ChartGPUOptions.dataZoom` includes `{ type: 'slider' }`, ChartGPU mounts a slider-style UI that manipulates the same percent zoom window. See [`ChartGPU.ts`](../src/ChartGPU.ts) and the internal UI helper [`createDataZoomSlider.ts`](../src/components/createDataZoomSlider.ts).
+  - **Coexistence**: multiple data-zoom configs can coexist (e.g. inside + slider) and drive the same x-zoom window.
   - **Config fields (current)**: `start` / `end` are used as the initial percent window (defaulting to `0` / `100` when omitted). Other fields (`xAxisIndex`, `minSpan`, `maxSpan`) are currently accepted by the type and preserved by option resolution, but are not yet applied by the runtime zoom path.
 - **`DataZoomConfig`**: data zoom configuration type. See [`DataZoomConfig`](../src/config/types.ts).
   - **`type: 'inside' | 'slider'`**
@@ -518,6 +522,16 @@ An internal DOM helper for rendering an HTML tooltip above the canvas. See [`cre
 - **Pointer events**: the tooltip uses `pointer-events: none` so it won’t intercept mouse/touch input.
 
 For default `innerHTML`-safe tooltip content formatting helpers (item + axis trigger modes), see [`formatTooltip.ts`](../src/components/formatTooltip.ts).
+
+### Data zoom slider (internal / contributor notes)
+
+A standalone internal DOM helper for rendering a slider-style x-zoom UI. See [`createDataZoomSlider.ts`](../src/components/createDataZoomSlider.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`); ChartGPU uses it internally when `ChartGPUOptions.dataZoom` includes `{ type: 'slider' }` (see [`ChartGPU.ts`](../src/ChartGPU.ts)).
+
+- **Factory**: `createDataZoomSlider(container: HTMLElement, zoomState: ZoomState, options?: DataZoomSliderOptions): DataZoomSlider`
+- **`DataZoomSlider` methods (essential)**:
+  - `update(theme: ThemeConfig): void`
+  - `dispose(): void`
+- **Inputs (zoom window semantics)**: `zoomState` is a percent-space window `{ start, end }` in \([0, 100]\) (ordered and clamped by the zoom state manager). See [`createZoomState.ts`](../src/interaction/createZoomState.ts).
 
 ### Render coordinator (internal / contributor notes)
 
