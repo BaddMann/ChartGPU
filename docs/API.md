@@ -110,7 +110,7 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
 
 - **`SeriesType`**: `'line' | 'area' | 'bar' | 'scatter' | 'pie'`. See [`types.ts`](../src/config/types.ts).
 - **`SeriesConfig`**: `LineSeriesConfig | AreaSeriesConfig | BarSeriesConfig | ScatterSeriesConfig | PieSeriesConfig` (discriminated by `series.type`). See [`types.ts`](../src/config/types.ts).
-- **Sampling (cartesian series only)**: cartesian series support optional `sampling?: 'none' | 'lttb' | 'average' | 'max' | 'min'` and optional `samplingThreshold?: number` (applied when the input series data length exceeds the threshold). When omitted, defaults are `sampling: 'lttb'` and `samplingThreshold: 5000` via [`resolveOptions`](../src/config/OptionResolver.ts) and baseline defaults in [`defaults.ts`](../src/config/defaults.ts). Sampling affects rendering and cartesian hit-testing only; axis auto-bounds are derived from raw (unsampled) series data unless you set `xAxis.min`/`xAxis.max` or `yAxis.min`/`yAxis.max` (see [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts)). Pie series (`type: 'pie'`) do not support these fields (pie is non-cartesian).
+- **Sampling (cartesian series only)**: cartesian series support optional `sampling?: 'none' | 'lttb' | 'average' | 'max' | 'min'` and optional `samplingThreshold?: number` (applied when the input series data length exceeds the threshold). When omitted, defaults are `sampling: 'lttb'` and `samplingThreshold: 5000` via [`resolveOptions`](../src/config/OptionResolver.ts) and baseline defaults in [`defaults.ts`](../src/config/defaults.ts). Sampling affects rendering and cartesian hit-testing only; axis auto-bounds are derived from raw (unsampled) series data unless you set `xAxis.min`/`xAxis.max` or `yAxis.min`/`yAxis.max` (see [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts)). When x-axis data zoom is enabled, sampling is re-applied against the **visible x-range** (from the percent-space zoom window in \([0, 100]\)) using raw data; resampling is **debounced (~100ms)** during zoom changes (see [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts)). Pie series (`type: 'pie'`) do not support these fields (pie is non-cartesian).
 - **`LineSeriesConfig`**: extends the shared series fields with `type: 'line'`, optional `lineStyle?: LineStyleConfig`, and optional `areaStyle?: AreaStyleConfig`.
   - When a line series includes `areaStyle`, ChartGPU renders a filled area behind the line (area fills then line strokes). See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
 - **`AreaSeriesConfig`**: extends the shared series fields with `type: 'area'`, optional `baseline?: number`, and optional `areaStyle?: AreaStyleConfig`.
@@ -150,6 +150,7 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
 
 - **`ChartGPUOptions.dataZoom?: ReadonlyArray<DataZoomConfig>`**: optional data-zoom configuration list. See [`ChartGPUOptions`](../src/config/types.ts) and [`DataZoomConfig`](../src/config/types.ts).
 - **Runtime behavior (current)**: data zoom controls a shared percent-space zoom window `{ start, end }` in \([0, 100]\) that is applied to the effective x-domain for both rendering and pointer interaction. See the x-domain application in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) and percent-space semantics in [`createZoomState.ts`](../src/interaction/createZoomState.ts).
+  - **Zoom-aware sampling (cartesian)**: when a cartesian series has sampling enabled, ChartGPU resamples from raw (unsampled) series data over the current visible x-range; resampling is debounced (~100ms) to avoid churn during wheel/drag zoom updates. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
   - **Inside zoom**: when `ChartGPUOptions.dataZoom` includes `{ type: 'inside' }`, ChartGPU enables an internal wheel/drag interaction. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) and [`createInsideZoom.ts`](../src/interaction/createInsideZoom.ts).
   - **Zoom gesture**: mouse wheel zoom, centered on the current cursor x-position (only when the pointer is inside the plot grid).
   - **Pan gesture**: shift+left-drag or middle-mouse drag pans left/right (only when the pointer is inside the plot grid).
@@ -384,7 +385,7 @@ All WebGPU types are provided by `@webgpu/types`. See [GPUContext.ts](../src/cor
 
 ## Internal modules (Contributor notes)
 
-Chart data uploads and per-series GPU vertex buffer caching are handled by the internal `createDataStore(device)` helper. See [`createDataStore.ts`](../src/data/createDataStore.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`).
+Chart data uploads and per-series GPU vertex buffer caching are handled by the internal `createDataStore(device)` helper. See [`createDataStore.ts`](../src/data/createDataStore.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`). **Buffers grow geometrically** to reduce reallocations when data grows incrementally.
 
 ### CPU downsampling (internal / contributor notes)
 
@@ -583,6 +584,7 @@ Shared WebGPU renderer helpers live in [`rendererUtils.ts`](../src/renderers/ren
   - **Fragment targets convenience**: provide `fragment.formats` (one or many formats) instead of full `fragment.targets` to generate `GPUColorTargetState[]` (optionally with shared `blend` / `writeMask`).
 - **`createUniformBuffer(device, size, options?)`**: creates a `GPUBuffer` with usage `UNIFORM | COPY_DST`, aligning size (defaults to 16-byte alignment).
 - **`writeUniformBuffer(device, buffer, data)`**: writes `BufferSource` data at offset 0 via `device.queue.writeBuffer(...)`.
+- **Uniform packing (perf)**: several renderers reuse small scratch typed arrays for uniform packing to avoid per-frame allocations; see [`createLineRenderer.ts`](../src/renderers/createLineRenderer.ts), [`createAreaRenderer.ts`](../src/renderers/createAreaRenderer.ts), [`createScatterRenderer.ts`](../src/renderers/createScatterRenderer.ts), and [`createPieRenderer.ts`](../src/renderers/createPieRenderer.ts).
 
 #### Line renderer (internal / contributor notes)
 

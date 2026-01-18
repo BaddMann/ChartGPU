@@ -159,6 +159,10 @@ export function createPieRenderer(device: GPUDevice, options?: PieRendererOption
   // VSUniforms in `pie.wgsl`: mat4x4 (64) + viewportPx vec2 (8) + pad vec2 (8) = 80 bytes.
   const vsUniformBuffer = createUniformBuffer(device, 80, { label: 'pieRenderer/vsUniforms' });
 
+  // Reused CPU-side staging for uniform writes (avoid per-frame allocations).
+  const vsUniformScratchBuffer = new ArrayBuffer(80);
+  const vsUniformScratchF32 = new Float32Array(vsUniformScratchBuffer);
+
   const bindGroup = device.createBindGroup({
     layout: bindGroupLayout,
     entries: [{ binding: 0, resource: { buffer: vsUniformBuffer } }],
@@ -222,12 +226,12 @@ export function createPieRenderer(device: GPUDevice, options?: PieRendererOption
     const w = Number.isFinite(viewportWDevicePx) && viewportWDevicePx > 0 ? viewportWDevicePx : 1;
     const h = Number.isFinite(viewportHDevicePx) && viewportHDevicePx > 0 ? viewportHDevicePx : 1;
 
-    const buf = new ArrayBuffer(80);
-    const f32 = new Float32Array(buf);
-    f32.set(IDENTITY_MAT4_F32, 0);
-    f32[16] = w;
-    f32[17] = h;
-    writeUniformBuffer(device, vsUniformBuffer, buf);
+    vsUniformScratchF32.set(IDENTITY_MAT4_F32, 0);
+    vsUniformScratchF32[16] = w;
+    vsUniformScratchF32[17] = h;
+    vsUniformScratchF32[18] = 0;
+    vsUniformScratchF32[19] = 0;
+    writeUniformBuffer(device, vsUniformBuffer, vsUniformScratchBuffer);
   };
 
   const prepare: PieRenderer['prepare'] = (seriesConfig, gridArea) => {

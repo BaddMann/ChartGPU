@@ -35,6 +35,20 @@ function roundUpToMultipleOf4(bytes: number): number {
   return (bytes + 3) & ~3;
 }
 
+function nextPow2(bytes: number): number {
+  if (!Number.isFinite(bytes) || bytes <= 0) return 1;
+  const n = Math.ceil(bytes);
+  return 2 ** Math.ceil(Math.log2(n));
+}
+
+function computeGrownCapacityBytes(currentCapacityBytes: number, requiredBytes: number): number {
+  // Grow geometrically to reduce buffer churn (power-of-two policy).
+  // Enforce 4-byte alignment via MIN_BUFFER_BYTES (>= 4) and power-of-two growth.
+  const required = Math.max(MIN_BUFFER_BYTES, roundUpToMultipleOf4(requiredBytes));
+  const grown = Math.max(MIN_BUFFER_BYTES, nextPow2(required));
+  return Math.max(currentCapacityBytes, grown);
+}
+
 function isTupleDataPoint(point: DataPoint): point is DataPointTuple {
   // `DataPoint` uses a readonly tuple; `Array.isArray` doesn't narrow it well without a predicate.
   return Array.isArray(point);
@@ -110,6 +124,13 @@ export function createDataStore(device: GPUDevice): DataStore {
     let capacityBytes = existing?.capacityBytes ?? 0;
 
     if (!buffer || targetBytes > capacityBytes) {
+      const maxBufferSize = device.limits.maxBufferSize;
+      if (targetBytes > maxBufferSize) {
+        throw new Error(
+          `DataStore.setSeries(${index}): required buffer size ${targetBytes} exceeds device.limits.maxBufferSize (${maxBufferSize}).`
+        );
+      }
+
       if (buffer) {
         try {
           buffer.destroy();
@@ -118,11 +139,20 @@ export function createDataStore(device: GPUDevice): DataStore {
         }
       }
 
+      const grownCapacityBytes = computeGrownCapacityBytes(capacityBytes, targetBytes);
+      if (grownCapacityBytes > maxBufferSize) {
+        // If geometric growth would exceed the limit, fall back to the exact required size.
+        // (Still no shrink: if current capacity was already larger, we'd keep it above.)
+        // NOTE: targetBytes is already checked against maxBufferSize above.
+        capacityBytes = targetBytes;
+      } else {
+        capacityBytes = grownCapacityBytes;
+      }
+
       buffer = device.createBuffer({
-        size: targetBytes,
+        size: capacityBytes,
         usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
       });
-      capacityBytes = targetBytes;
     }
 
     // Avoid 0-byte writes (empty series). The buffer is still valid for binding.

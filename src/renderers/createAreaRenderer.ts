@@ -90,50 +90,24 @@ const computeClipAffineFromScale = (
   return { a: Number.isFinite(a) ? a : 0, b: Number.isFinite(b) ? b : 0 };
 };
 
-const createTransformMat4Buffer = (ax: number, bx: number, ay: number, by: number): ArrayBuffer => {
+const writeTransformMat4F32 = (out: Float32Array, ax: number, bx: number, ay: number, by: number): void => {
   // Column-major mat4x4 for: clip = M * vec4(x, y, 0, 1)
-  //
-  // Note: We allocate an explicit `ArrayBuffer` so it typechecks cleanly with
-  // `@webgpu/types` (avoids `ArrayBufferLike`/`SharedArrayBuffer` issues).
-  const buffer = new ArrayBuffer(16 * 4);
-  new Float32Array(buffer).set([
-    ax,
-    0,
-    0,
-    0, // col0
-    0,
-    ay,
-    0,
-    0, // col1
-    0,
-    0,
-    1,
-    0, // col2
-    bx,
-    by,
-    0,
-    1, // col3
-  ]);
-  return buffer;
-};
-
-const createVsUniformBuffer = (transformMat4: ArrayBuffer, baseline: number): ArrayBuffer => {
-  // VSUniforms:
-  // - mat4x4<f32> (64 bytes)
-  // - baseline: f32 (4 bytes)
-  // - (implicit padding to next 16B boundary) (12 bytes)
-  // - _pad0: vec3<f32> (occupies 16 bytes in a uniform buffer)
-  // Total: 96 bytes.
-  //
-  // Layout details (uniform address space):
-  // - transform at byte offset 0
-  // - baseline at byte offset 64 (f32[16])
-  // - _pad0 at byte offset 80 (f32[20..22]) with trailing 4B padding
-  const buffer = new ArrayBuffer(96);
-  const f32 = new Float32Array(buffer);
-  f32.set(new Float32Array(transformMat4), 0);
-  f32[16] = baseline;
-  return buffer;
+  out[0] = ax;
+  out[1] = 0;
+  out[2] = 0;
+  out[3] = 0; // col0
+  out[4] = 0;
+  out[5] = ay;
+  out[6] = 0;
+  out[7] = 0; // col1
+  out[8] = 0;
+  out[9] = 0;
+  out[10] = 1;
+  out[11] = 0; // col2
+  out[12] = bx;
+  out[13] = by;
+  out[14] = 0;
+  out[15] = 1; // col3
 };
 
 const createAreaVertices = (data: ResolvedAreaSeriesConfig['data']): Float32Array => {
@@ -167,6 +141,11 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
 
   const vsUniformBuffer = createUniformBuffer(device, 96, { label: 'areaRenderer/vsUniforms' });
   const fsUniformBuffer = createUniformBuffer(device, 16, { label: 'areaRenderer/fsUniforms' });
+
+  // Reused CPU-side staging for uniform writes (avoid per-frame allocations).
+  const vsUniformScratchBuffer = new ArrayBuffer(96);
+  const vsUniformScratchF32 = new Float32Array(vsUniformScratchBuffer);
+  const fsUniformScratchF32 = new Float32Array(4);
 
   const bindGroup = device.createBindGroup({
     layout: bindGroupLayout,
@@ -211,6 +190,30 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     if (disposed) throw new Error('AreaRenderer is disposed.');
   };
 
+  const writeVsUniforms = (ax: number, bx: number, ay: number, by: number, baseline: number): void => {
+    // VSUniforms:
+    // - mat4x4<f32> (64 bytes)
+    // - baseline: f32 (4 bytes)
+    // - (implicit padding to next 16B boundary) (12 bytes)
+    // - _pad0: vec3<f32> (occupies 16 bytes in a uniform buffer)
+    // Total: 96 bytes.
+    //
+    // Layout details (uniform address space):
+    // - transform at byte offset 0
+    // - baseline at byte offset 64 (f32[16])
+    // - _pad0 at byte offset 80 (f32[20..22]) with trailing 4B padding
+    writeTransformMat4F32(vsUniformScratchF32, ax, bx, ay, by);
+    vsUniformScratchF32[16] = baseline;
+    vsUniformScratchF32[17] = 0;
+    vsUniformScratchF32[18] = 0;
+    vsUniformScratchF32[19] = 0;
+    vsUniformScratchF32[20] = 0;
+    vsUniformScratchF32[21] = 0;
+    vsUniformScratchF32[22] = 0;
+    vsUniformScratchF32[23] = 0;
+    writeUniformBuffer(device, vsUniformBuffer, vsUniformScratchBuffer);
+  };
+
   const prepare: AreaRenderer['prepare'] = (seriesConfig, data, xScale, yScale, baseline) => {
     assertNotDisposed();
 
@@ -245,14 +248,15 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     const baselineValue =
       Number.isFinite(baseline ?? Number.NaN) ? (baseline as number) : Number.isFinite(yMin) ? yMin : 0;
 
-    const transformBuffer = createTransformMat4Buffer(ax, bx, ay, by);
-    writeUniformBuffer(device, vsUniformBuffer, createVsUniformBuffer(transformBuffer, baselineValue));
+    writeVsUniforms(ax, bx, ay, by, baselineValue);
 
     const [r, g, b, a] = parseSeriesColorToRgba01(seriesConfig.color);
     const opacity = clamp01(seriesConfig.areaStyle.opacity);
-    const colorBuffer = new ArrayBuffer(4 * 4);
-    new Float32Array(colorBuffer).set([r, g, b, clamp01(a * opacity)]);
-    writeUniformBuffer(device, fsUniformBuffer, colorBuffer);
+    fsUniformScratchF32[0] = r;
+    fsUniformScratchF32[1] = g;
+    fsUniformScratchF32[2] = b;
+    fsUniformScratchF32[3] = clamp01(a * opacity);
+    writeUniformBuffer(device, fsUniformBuffer, fsUniformScratchF32);
   };
 
   const render: AreaRenderer['render'] = (passEncoder) => {
