@@ -12,6 +12,7 @@ import type { NearestPointMatch } from './interaction/findNearestPoint';
 import { findPieSlice } from './interaction/findPieSlice';
 import { createLinearScale } from './utils/scales';
 import type { LinearScale } from './utils/scales';
+import { checkWebGPUSupport } from './utils/checkWebGPU';
 
 export interface ChartGPUInstance {
   readonly options: Readonly<ChartGPUOptions>;
@@ -371,6 +372,22 @@ export async function createChartGPU(
   container: HTMLElement,
   options: ChartGPUOptions
 ): Promise<ChartGPUInstance> {
+  // Check WebGPU support before creating canvas or any resources
+  const supportCheck = await checkWebGPUSupport();
+  if (!supportCheck.supported) {
+    const reason = supportCheck.reason || 'Unknown reason';
+    throw new Error(
+      `ChartGPU: WebGPU is not available.\n` +
+      `Reason: ${reason}\n` +
+      `Browser support: Chrome/Edge 113+, Safari 18+, Firefox not yet supported.\n` +
+      `Resources:\n` +
+      `  - MDN WebGPU API: https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API\n` +
+      `  - Browser compatibility: https://caniuse.com/webgpu\n` +
+      `  - WebGPU specification: https://www.w3.org/TR/webgpu/\n` +
+      `  - Check your system: https://webgpureport.org/`
+    );
+  }
+
   const canvas = document.createElement('canvas');
 
   // Ensure the canvas participates in layout and can size via the container.
@@ -1098,7 +1115,23 @@ export async function createChartGPU(
     // Establish initial canvas backing size before WebGPU initialization.
     resizeInternal(false);
 
-    gpuContext = await GPUContext.create(canvas);
+    // Try to create GPU context; wrap errors with detailed WebGPU unavailability message
+    try {
+      gpuContext = await GPUContext.create(canvas);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `ChartGPU: WebGPU is not available.\n` +
+        `Reason: ${errorMessage}\n` +
+        `Browser support: Chrome/Edge 113+, Safari 18+, Firefox not yet supported.\n` +
+        `Resources:\n` +
+        `  - MDN WebGPU API: https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API\n` +
+        `  - Browser compatibility: https://caniuse.com/webgpu\n` +
+        `  - WebGPU specification: https://www.w3.org/TR/webgpu/\n` +
+        `  - Check your system: https://webgpureport.org/`
+      );
+    }
+
     gpuContext.device?.lost.then((info) => {
       if (disposed) return;
       if (info.reason !== 'destroyed') {

@@ -1,3 +1,8 @@
+/**
+ * Advanced performance benchmark: 1 million points with WebGPU.
+ * Uses low-level APIs (`GPUContext` + `createRenderCoordinator`) for direct control,
+ * custom render loop, sampling strategies, and GPU timing probes.
+ */
 import { GPUContext, resolveOptions } from '../../src/index';
 import type { ChartGPUOptions, DataPoint, SeriesSampling } from '../../src/index';
 import { createRenderCoordinator } from '../../src/core/createRenderCoordinator';
@@ -37,8 +42,12 @@ const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.m
 
 const hasSliderDataZoom = (options: ChartGPUOptions): boolean => options.dataZoom?.some((z) => z?.type === 'slider') ?? false;
 
+/**
+ * Mimics ChartGPU's option resolution when using coordinator directly.
+ * - Preserves user tooltip object (resolveOptions normally replaces it with resolved version)
+ * - Reserves bottom space for slider UI to avoid overlap
+ */
 const resolveOptionsForBenchmark = (options: ChartGPUOptions) => {
-  // Mirror ChartGPU.ts behavior: preserve user tooltip object and reserve bottom space for slider.
   const base = { ...resolveOptions(options), tooltip: options.tooltip };
   if (!hasSliderDataZoom(options)) return base;
   return {
@@ -50,6 +59,11 @@ const resolveOptionsForBenchmark = (options: ChartGPUOptions) => {
   };
 };
 
+/**
+ * Generates 1M synthetic data points with deterministic PRNG.
+ * x = index (strictly increasing) enables predictable zoom-to-index mapping.
+ * Deterministic output ensures reproducible benchmark results across runs.
+ */
 const createMillionPointsData = (): Readonly<{
   data: ReadonlyArray<DataPoint>;
   yMin: number;
@@ -58,7 +72,6 @@ const createMillionPointsData = (): Readonly<{
   const out: DataPoint[] = new Array(TOTAL_POINTS);
 
   // Synthetic: sine wave + low-frequency component + uniform noise.
-  // Keep x strictly increasing and finite (x = index).
   const freq = 0.012;
   const lowFreq = 0.0017;
   const noiseAmp = 0.35;
@@ -99,6 +112,10 @@ const createMillionPointsData = (): Readonly<{
   return { data: out, yMin: yMin - pad, yMax: yMax + pad };
 };
 
+/**
+ * Zoom-aware sampling target: zooming in increases target points for detail preservation.
+ * Target grows ~ 1/spanFrac but capped to prevent excessive memory.
+ */
 const computeZoomAwareTarget = (baseThreshold: number, spanFrac: number): number => {
   // Mirrors createRenderCoordinator’s behavior (see examples/sampling/main.ts):
   // - baseline target is samplingThreshold at full span
@@ -116,6 +133,11 @@ const computeZoomAwareTarget = (baseThreshold: number, spanFrac: number): number
   return clamp(v | 0, MIN_TARGET_POINTS, maxTarget);
 };
 
+/**
+ * Estimates points rendered after sampling.
+ * 'lttb' sampling reduces to threshold, 'none' renders all visible points.
+ * Tradeoff: lower threshold = faster but less detail; 'none' = slower but exact.
+ */
 const estimateRenderedPoints = (
   totalPoints: number,
   zoomRange: ZoomRange | null,
@@ -139,6 +161,10 @@ type RollingStat = Readonly<{
   mean(): number;
 }>;
 
+/**
+ * Rolling window statistics for smoothing FPS/timing metrics.
+ * Circular buffer avoids allocations during benchmark.
+ */
 const createRollingStat = (windowSize: number): RollingStat => {
   const buf = new Float64Array(Math.max(1, windowSize | 0));
   let idx = 0;
@@ -168,6 +194,10 @@ const createRollingStat = (windowSize: number): RollingStat => {
   };
 };
 
+/**
+ * Main setup: initializes GPUContext, createRenderCoordinator (low-level API),
+ * continuous render loop, and GPU timing probes for performance measurement.
+ */
 async function main(): Promise<void> {
   const container = document.getElementById('chart');
   if (!(container instanceof HTMLElement)) throw new Error('Chart container (#chart) not found');
@@ -293,6 +323,10 @@ async function main(): Promise<void> {
     slider.update(resolvedOptions.theme);
   };
 
+  /**
+   * Sizes canvas backing store with device pixel ratio for crispness on high-DPI displays.
+   * Clamps to maxTextureDimension2D to avoid WebGPU validation errors on large/zoomed viewports.
+   */
   const resizeCanvasAndConfigure = (): void => {
     const rect = canvas.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
@@ -420,6 +454,10 @@ async function main(): Promise<void> {
     }
   };
 
+  /**
+   * GPU timing probe via onSubmittedWorkDone: measures CPU→GPU→CPU latency, not pure GPU time.
+   * Includes queue wait + execution + result readback. Only one probe in-flight to avoid promise spam.
+   */
   const scheduleGpuTimingProbe = (submitTs: number): void => {
     const device = gpuContext?.device;
     if (!device) return;
@@ -427,9 +465,6 @@ async function main(): Promise<void> {
 
     gpuTimingInFlight = true;
     gpuTimingSubmitTs = submitTs;
-
-    // Note: onSubmittedWorkDone resolves when all work submitted before this call is complete.
-    // We intentionally keep only one probe in-flight to avoid creating many promises.
     device.queue
       .onSubmittedWorkDone()
       .then(() => {
@@ -445,6 +480,10 @@ async function main(): Promise<void> {
       });
   };
 
+  /**
+   * Continuous requestAnimationFrame loop: renders every frame for sustained performance measurement.
+   * Real apps typically render on-demand (data/zoom change) to save battery.
+   */
   const renderLoop = (ts: number): void => {
     rafId = requestAnimationFrame(renderLoop);
 
@@ -462,6 +501,10 @@ async function main(): Promise<void> {
     updateStatsDom(ts);
   };
 
+  /**
+   * Cleanup: stops render loop, disposes GPU resources, cancels observers.
+   * Critical to prevent leaks (especially RAF, GPU buffers, pipelines).
+   */
   let cleanedUp = false;
   const cleanup = (): void => {
     if (cleanedUp) return;
@@ -482,6 +525,8 @@ async function main(): Promise<void> {
     resizeCanvasAndConfigure();
 
     gpuContext = await GPUContext.create(canvas);
+    // Device-loss handling: GPU can be lost due to driver crash, TDR, or system sleep.
+    // Always handle device.lost to gracefully stop rendering and avoid WebGPU errors.
     gpuContext.device?.lost.then((info) => {
       if (cleanedUp) return;
       if (info.reason !== 'destroyed') {
