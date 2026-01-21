@@ -1,6 +1,7 @@
 import type {
   ResolvedAreaSeriesConfig,
   ResolvedBarSeriesConfig,
+  ResolvedCandlestickSeriesConfig,
   ResolvedChartGPUOptions,
   ResolvedPieSeriesConfig,
 } from '../config/OptionResolver';
@@ -28,6 +29,7 @@ import { createZoomState } from '../interaction/createZoomState';
 import type { ZoomRange, ZoomState } from '../interaction/createZoomState';
 import { findNearestPoint } from '../interaction/findNearestPoint';
 import { findPointsAtX } from '../interaction/findPointsAtX';
+import { computeCandlestickBodyWidthRange, findCandlestick } from '../interaction/findCandlestick';
 import { findPieSlice } from '../interaction/findPieSlice';
 import { createLinearScale } from '../utils/scales';
 import type { LinearScale } from '../utils/scales';
@@ -133,6 +135,9 @@ const getPointXY = (p: DataPoint): { readonly x: number; readonly y: number } =>
   if (isTupleDataPoint(p)) return { x: p[0], y: p[1] };
   return { x: p.x, y: p.y };
 };
+
+const getOHLCTimestamp = (p: OHLCDataPoint): number => (isTupleOHLCDataPoint(p) ? p[0] : p.timestamp);
+const getOHLCClose = (p: OHLCDataPoint): number => (isTupleOHLCDataPoint(p) ? p[2] : p.close);
 
 const computeRawBoundsFromData = (data: ReadonlyArray<DataPoint>): Bounds | null => {
   let xMin = Number.POSITIVE_INFINITY;
@@ -1504,6 +1509,23 @@ export function createRenderCoordinator(
     };
   };
 
+  const buildCandlestickTooltipParams = (
+    seriesIndex: number,
+    dataIndex: number,
+    point: OHLCDataPoint
+  ): TooltipParams => {
+    const s = currentOptions.series[seriesIndex];
+    const timestamp = getOHLCTimestamp(point);
+    const close = getOHLCClose(point);
+    return {
+      seriesName: s?.name ?? '',
+      seriesIndex,
+      dataIndex,
+      value: [timestamp, close],
+      color: s?.color ?? '#888',
+    };
+  };
+
   const onMouseMove = (payload: ChartGPUEventPayload): void => {
     pointerState = {
       source: 'mouse',
@@ -2336,6 +2358,36 @@ export function createRenderCoordinator(
         const containerX = canvas.offsetLeft + effectivePointer.x;
         const containerY = canvas.offsetTop + effectivePointer.y;
 
+        const tryFindCandlestickParams = (): TooltipParams | null => {
+          // Candlestick body-only hit-testing (wicks ignored), using grid-local CSS px.
+          for (let i = seriesForRender.length - 1; i >= 0; i--) {
+            const s = seriesForRender[i];
+            if (s.type !== 'candlestick') continue;
+
+            const cs = s as ResolvedCandlestickSeriesConfig;
+            const barWidthClip = computeCandlestickBodyWidthRange(
+              cs,
+              cs.data,
+              interactionScales.xScale,
+              interactionScales.plotWidthCss
+            );
+
+            const m = findCandlestick(
+              [cs],
+              effectivePointer.gridX,
+              effectivePointer.gridY,
+              interactionScales.xScale,
+              interactionScales.yScale,
+              barWidthClip
+            );
+            if (!m) continue;
+
+            // Prefer later series indices to match visual stacking order.
+            return buildCandlestickTooltipParams(i, m.dataIndex, m.point);
+          }
+          return null;
+        };
+
         if (effectivePointer.source === 'sync') {
           // Sync semantics:
           // - Tooltip should be driven by x only (no y).
@@ -2400,11 +2452,24 @@ export function createRenderCoordinator(
             if (content) tooltip.show(containerX, containerY, content);
             else tooltip.hide();
           } else {
+            // Candlestick body hit-testing (mouse, axis trigger): include only when inside candle body.
+            const candlestickParams = tryFindCandlestickParams();
+
             const matches = findPointsAtX(seriesForRender, effectivePointer.gridX, interactionScales.xScale);
             if (matches.length === 0) {
-              tooltip.hide();
+              if (candlestickParams) {
+                const paramsArray = [candlestickParams];
+                const content = formatter
+                  ? (formatter as (p: ReadonlyArray<TooltipParams>) => string)(paramsArray)
+                  : formatTooltipAxis(paramsArray);
+                if (content) tooltip.show(containerX, containerY, content);
+                else tooltip.hide();
+              } else {
+                tooltip.hide();
+              }
             } else {
               const paramsArray = matches.map((m) => buildTooltipParams(m.seriesIndex, m.dataIndex, m.point));
+              if (candlestickParams) paramsArray.push(candlestickParams);
               const content = formatter
                 ? (formatter as (p: ReadonlyArray<TooltipParams>) => string)(paramsArray)
                 : formatTooltipAxis(paramsArray);
@@ -2453,6 +2518,17 @@ export function createRenderCoordinator(
             if (content) tooltip.show(containerX, containerY, content);
             else tooltip.hide();
           } else {
+            // Candlestick body hit-testing (mouse, item trigger): prefer candle body over nearest-point logic.
+            const candlestickParams = tryFindCandlestickParams();
+            if (candlestickParams) {
+              const content = formatter
+                ? (formatter as (p: TooltipParams) => string)(candlestickParams)
+                : formatTooltipItem(candlestickParams);
+              if (content) tooltip.show(containerX, containerY, content);
+              else tooltip.hide();
+              return;
+            }
+
             const match = findNearestPoint(
               seriesForRender,
               effectivePointer.gridX,

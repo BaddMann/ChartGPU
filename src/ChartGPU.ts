@@ -2,11 +2,12 @@ import { GPUContext } from './core/GPUContext';
 import { createRenderCoordinator } from './core/createRenderCoordinator';
 import type { RenderCoordinator } from './core/createRenderCoordinator';
 import { resolveOptions } from './config/OptionResolver';
-import type { ResolvedChartGPUOptions, ResolvedPieSeriesConfig } from './config/OptionResolver';
-import type { ChartGPUOptions, DataPoint, DataPointTuple, PieCenter, PieRadius } from './config/types';
+import type { ResolvedCandlestickSeriesConfig, ResolvedChartGPUOptions, ResolvedPieSeriesConfig } from './config/OptionResolver';
+import type { ChartGPUOptions, DataPoint, DataPointTuple, OHLCDataPoint, OHLCDataPointTuple, PieCenter, PieRadius } from './config/types';
 import { createDataZoomSlider } from './components/createDataZoomSlider';
 import type { DataZoomSlider } from './components/createDataZoomSlider';
 import type { ZoomRange, ZoomState } from './interaction/createZoomState';
+import { computeCandlestickBodyWidthRange, findCandlestick } from './interaction/findCandlestick';
 import { findNearestPoint } from './interaction/findNearestPoint';
 import type { NearestPointMatch } from './interaction/findNearestPoint';
 import { findPieSlice } from './interaction/findPieSlice';
@@ -109,11 +110,15 @@ const DATA_ZOOM_SLIDER_MARGIN_TOP_CSS_PX = 8;
 const DATA_ZOOM_SLIDER_RESERVE_CSS_PX = DATA_ZOOM_SLIDER_HEIGHT_CSS_PX + DATA_ZOOM_SLIDER_MARGIN_TOP_CSS_PX;
 
 const isTupleDataPoint = (p: DataPoint): p is DataPointTuple => Array.isArray(p);
+const isTupleOHLCDataPoint = (p: OHLCDataPoint): p is OHLCDataPointTuple => Array.isArray(p);
 
 const getPointXY = (p: DataPoint): { readonly x: number; readonly y: number } => {
   if (isTupleDataPoint(p)) return { x: p[0], y: p[1] };
   return { x: p.x, y: p.y };
 };
+
+const getOHLCTimestamp = (p: OHLCDataPoint): number => (isTupleOHLCDataPoint(p) ? p[0] : p.timestamp);
+const getOHLCClose = (p: OHLCDataPoint): number => (isTupleOHLCDataPoint(p) ? p[2] : p.close);
 
 const hasSliderDataZoom = (options: ChartGPUOptions): boolean => options.dataZoom?.some((z) => z?.type === 'slider') ?? false;
 
@@ -308,7 +313,14 @@ type PieHitTestMatch = Readonly<{
   sliceValue: number;
 }>;
 
-type HitTestMatch = CartesianHitTestMatch | PieHitTestMatch;
+type CandlestickHitTestMatch = Readonly<{
+  kind: 'candlestick';
+  seriesIndex: number;
+  dataIndex: number;
+  point: OHLCDataPoint;
+}>;
+
+type HitTestMatch = CartesianHitTestMatch | PieHitTestMatch | CandlestickHitTestMatch;
 
 const parseNumberOrPercent = (value: number | string, basis: number): number | null => {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
@@ -464,6 +476,7 @@ export async function createChartGPU(
 
   // Prevent spamming console.warn for repeated misuse.
   const warnedPieAppendSeries = new Set<number>();
+  const warnedCandlestickAppendSeries = new Set<number>();
 
   let scheduledRaf: number | null = null;
   let lastConfigured: { width: number; height: number; format: GPUTextureFormat } | null = null;
@@ -795,6 +808,22 @@ export async function createChartGPU(
 
     if (pieMatch) return { match: pieMatch, isInGrid: true };
 
+    // Candlestick body hit-testing (grid-local CSS px), prefer later series indices.
+    for (let i = resolvedOptions.series.length - 1; i >= 0; i--) {
+      const s = resolvedOptions.series[i];
+      if (s?.type !== 'candlestick') continue;
+
+      const seriesCfg = s as ResolvedCandlestickSeriesConfig;
+      const barWidthRange = computeCandlestickBodyWidthRange(seriesCfg, seriesCfg.data, scales.xScale, plotWidthCss);
+      const m = findCandlestick([seriesCfg], gridX, gridY, scales.xScale, scales.yScale, barWidthRange);
+      if (!m) continue;
+
+      return {
+        match: { kind: 'candlestick', seriesIndex: i, dataIndex: m.dataIndex, point: m.point },
+        isInGrid: true,
+      };
+    }
+
     const cartesianMatch = findNearestPoint(
       getRuntimeHitTestSeries(),
       gridX,
@@ -827,6 +856,18 @@ export async function createChartGPU(
         seriesIndex,
         dataIndex,
         value: [0, match.sliceValue],
+        seriesName,
+        event,
+      };
+    }
+
+    if (match.kind === 'candlestick') {
+      const timestamp = getOHLCTimestamp(match.point);
+      const close = getOHLCClose(match.point);
+      return {
+        seriesIndex,
+        dataIndex,
+        value: [timestamp, close],
         seriesName,
         event,
       };
@@ -1053,6 +1094,16 @@ export async function createChartGPU(
           warnedPieAppendSeries.add(seriesIndex);
           console.warn(
             `ChartGPU.appendData(${seriesIndex}, ...): pie series are not supported by streaming append. Use setOption(...) to replace pie data.`
+          );
+        }
+        return;
+      }
+      if (s.type === 'candlestick') {
+        // Candlestick series are currently not supported by streaming append.
+        if (!warnedCandlestickAppendSeries.has(seriesIndex)) {
+          warnedCandlestickAppendSeries.add(seriesIndex);
+          console.warn(
+            `ChartGPU.appendData(${seriesIndex}, ...): candlestick series are not supported by streaming append. Use setOption(...) to replace candlestick data.`
           );
         }
         return;
