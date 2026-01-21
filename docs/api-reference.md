@@ -414,10 +414,10 @@ export interface TooltipConfig {
 **Tooltip value tuples:**
 
 - Cartesian series (line, area, bar, scatter): `params.value` is `readonly [number, number]` for `[x, y]`.
-- Candlestick series: `params.value` is `readonly [number, number, number, number, number]` for `[timestamp, open, close, low, high]`.
+- Candlestick series: `params.value` is `readonly [number, number, number, number, number]` for `[timestamp, open, close, low, high]`. Candlestick tooltips anchor to the candle body center (vertical midpoint between open and close) rather than cursor position, providing stable positioning in both item and axis trigger modes.
 - Pie series: `params.value` is `readonly [number, number]` for `[0, sliceValue]`.
 
-Custom formatters can distinguish by checking `params.value.length` (2 for cartesian/pie, 5 for candlestick). See [`formatTooltip.ts`](../src/components/formatTooltip.ts) for default implementations.
+Custom formatters can distinguish by checking `params.value.length` (2 for cartesian/pie, 5 for candlestick). See [`formatTooltip.ts`](../src/components/formatTooltip.ts) for default implementations and [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) for positioning logic.
 
 Security note: tooltip content is assigned via `innerHTML`. Only return trusted/sanitized strings.
 
