@@ -22,15 +22,16 @@ const TIMEFRAME_TIMESCALES: Record<string, number> = {
   '1d': 720, // 720x speed: 1d candle closes every 120s
 };
 
-// Configuration (base values)
+// Configuration (base values - some are mutable for user control)
 const CONFIG = {
   symbol: 'MEME/USD',
-  historicalCandles: 60, // Match static candlestick example for big candles
   ticksPerSecond: 20, // Moderate tick rate for visible updates
   tickVolatility: 0.008, // Per-tick volatility (visible but not wild)
-  maxCandles: 200, // Memory bound - keep it small for big candles
   startPrice: 100, // Nice round starting price
 };
+
+// Mutable candle count (user-configurable)
+let currentCandleCount = 60;
 
 // Mutable timeframe state (updated when user switches intervals)
 let currentTimeframe = '1s';
@@ -66,18 +67,38 @@ const isTupleOHLCDataPoint = (
 const getTimestamp = (p: OHLCDataPoint): number => (isTupleOHLCDataPoint(p) ? p[0] : p.timestamp);
 const getClose = (p: OHLCDataPoint): number => (isTupleOHLCDataPoint(p) ? p[2] : p.close);
 
+// Get appropriate dataZoom config based on candle count
+function getDataZoomConfig(candleCount: number) {
+  if (candleCount <= 200) {
+    // Few candles: just inside zoom, show all data
+    return [{ type: 'inside' }];
+  } else {
+    // Many candles: add slider and zoom to recent data
+    const showPercent = Math.min(100, Math.max(5, 500 / candleCount * 100));
+    return [
+      { type: 'inside' },
+      { type: 'slider', start: 100 - showPercent, end: 100 },
+    ];
+  }
+}
+
+// Get max candles based on current count (allow some growth for streaming)
+function getMaxCandles(candleCount: number): number {
+  return Math.max(candleCount + 1000, candleCount * 1.5);
+}
+
 async function init() {
   const container = document.getElementById('chart')!;
 
   // Generate impressive historical data
-  console.log(`Generating ${CONFIG.historicalCandles.toLocaleString()} historical candles...`);
+  console.log(`Generating ${currentCandleCount.toLocaleString()} historical candles...`);
   const startGen = performance.now();
 
   data = generateHistoricalData({
     symbol: CONFIG.symbol,
     startPrice: CONFIG.startPrice,
     volatility: 0.03, // 3% volatility like static example for nice candle sizes
-    candleCount: CONFIG.historicalCandles,
+    candleCount: currentCandleCount,
     intervalMs: candleIntervalMs,
   });
 
@@ -112,7 +133,7 @@ async function init() {
         samplingThreshold: 2000,
       },
     ],
-    dataZoom: [{ type: 'inside' }], // Just inside zoom, no slider needed with few candles
+    dataZoom: getDataZoomConfig(currentCandleCount),
     tooltip: { trigger: 'item' },
     animation: false, // Critical for streaming performance
     autoScroll: true,
@@ -165,8 +186,9 @@ function handleTick(tick: Tick) {
       data.push(currentCandle);
 
       // Memory management: trim old candles
-      if (data.length > CONFIG.maxCandles) {
-        data = data.slice(data.length - CONFIG.maxCandles);
+      const maxCandles = getMaxCandles(currentCandleCount);
+      if (data.length > maxCandles) {
+        data = data.slice(data.length - maxCandles);
         // Preserve full options when trimming data
         const series0 = fullChartOptions.series?.[0];
         if (series0 && series0.type === 'candlestick') {
@@ -273,7 +295,7 @@ function switchTimeframe(tf: string) {
     symbol: CONFIG.symbol,
     startPrice: CONFIG.startPrice,
     volatility: 0.03, // 3% volatility like static example for nice candle sizes
-    candleCount: CONFIG.historicalCandles,
+    candleCount: currentCandleCount,
     intervalMs: candleIntervalMs,
   });
   console.log(`Regenerated ${data.length.toLocaleString()} candles in ${(performance.now() - startGen).toFixed(0)}ms`);
@@ -302,6 +324,87 @@ function switchTimeframe(tf: string) {
   if (series0 && series0.type === 'candlestick') {
     fullChartOptions = {
       ...fullChartOptions,
+      series: [
+        {
+          ...series0,
+          data,
+        },
+      ],
+    };
+    chart.setOption(fullChartOptions);
+  }
+
+  // Reset tick count stats
+  lastTickCount = 0;
+  ticksPerSec = 0;
+
+  // Resume streaming if it was running
+  if (wasStreaming) {
+    tickSimulator.start();
+  }
+
+  updateStats();
+}
+
+/**
+ * Switch to a different candle count.
+ * Regenerates historical data and recreates the chart view.
+ */
+function switchCandleCount(count: number) {
+  // Skip if already at this count
+  if (count === currentCandleCount) {
+    return;
+  }
+
+  // Remember if we were streaming
+  const wasStreaming = isStreaming;
+
+  // Stop streaming while we regenerate
+  if (isStreaming) {
+    tickSimulator.stop();
+  }
+
+  // Update candle count
+  currentCandleCount = count;
+
+  console.log(`Switching to ${count.toLocaleString()} candles`);
+
+  // Regenerate historical data with new count
+  const startGen = performance.now();
+  data = generateHistoricalData({
+    symbol: CONFIG.symbol,
+    startPrice: CONFIG.startPrice,
+    volatility: 0.03,
+    candleCount: currentCandleCount,
+    intervalMs: candleIntervalMs,
+  });
+  console.log(`Regenerated ${data.length.toLocaleString()} candles in ${(performance.now() - startGen).toFixed(0)}ms`);
+
+  // Get last price for tick simulator
+  const lastCandle = data[data.length - 1];
+  const lastPrice = getClose(lastCandle);
+
+  // Reset simulated time based on new data
+  simulatedTimeMs = getTimestamp(lastCandle) + candleIntervalMs;
+  lastSimPerfNow = performance.now();
+
+  // Recreate candle aggregator
+  candleAggregator = createCandleAggregator(candleIntervalMs);
+
+  // Recreate tick simulator with current price
+  tickSimulator = createTickSimulator({
+    initialPrice: lastPrice,
+    ticksPerSecond: CONFIG.ticksPerSecond,
+    volatility: CONFIG.tickVolatility,
+    onTick: handleTick,
+  });
+
+  // Update chart with new data and appropriate dataZoom config
+  const series0 = fullChartOptions.series?.[0];
+  if (series0 && series0.type === 'candlestick') {
+    fullChartOptions = {
+      ...fullChartOptions,
+      dataZoom: getDataZoomConfig(currentCandleCount),
       series: [
         {
           ...series0,
@@ -362,6 +465,20 @@ function setupControls() {
 
       // Switch to the new timeframe
       switchTimeframe(tf);
+    });
+  });
+
+  // Candle count preset buttons
+  document.querySelectorAll('.preset-btn').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const count = parseInt((e.target as HTMLElement).dataset.count || '60', 10);
+
+      // Update active button state
+      document.querySelectorAll('.preset-btn').forEach((b) => b.classList.remove('active'));
+      (e.target as HTMLElement).classList.add('active');
+
+      // Switch to the new candle count
+      switchCandleCount(count);
     });
   });
 
