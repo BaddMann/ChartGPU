@@ -214,6 +214,11 @@ body {
   border-color: var(--text-secondary);
 }
 
+.control-btn.toggle-active {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
 /* Chart */
 .chart-container {
   flex: 1;
