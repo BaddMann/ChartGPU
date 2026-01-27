@@ -3544,7 +3544,7 @@ export function createRenderCoordinator(
         span.style.fontFamily = currentOptions.theme.fontFamily;
 
         // Collect for callback
-        collectedXLabels.push({ axis: 'x', text: label, position: offsetX + xCss, isTitle: false });
+        collectedXLabels.push({ axis: 'x', text: label, x: offsetX + xCss, y: offsetY + xLabelY, isTitle: false });
       }
 
       const yTickCount = DEFAULT_TICK_COUNT;
@@ -3574,7 +3574,7 @@ export function createRenderCoordinator(
         ySpans.push(span);
 
         // Collect for callback
-        collectedYLabels.push({ axis: 'y', text: label, position: offsetY + yCss, isTitle: false });
+        collectedYLabels.push({ axis: 'y', text: label, x: offsetX + yLabelX, y: offsetY + yCss, isTitle: false });
       }
 
       const axisNameFontSize = Math.max(
@@ -3597,7 +3597,7 @@ export function createRenderCoordinator(
         span.style.fontWeight = '600';
 
         // Collect for callback
-        collectedXLabels.push({ axis: 'x', text: xAxisName, position: offsetX + xCenter, isTitle: true });
+        collectedXLabels.push({ axis: 'x', text: xAxisName, x: offsetX + xCenter, y: offsetY + xTitleY, isTitle: true });
       }
 
       const yAxisName = currentOptions.yAxis.name?.trim() ?? '';
@@ -3622,7 +3622,7 @@ export function createRenderCoordinator(
         span.style.fontWeight = '600';
 
         // Collect for callback
-        collectedYLabels.push({ axis: 'y', text: yAxisName, position: offsetY + yCenter, rotation: -90, isTitle: true });
+        collectedYLabels.push({ axis: 'y', text: yAxisName, x: offsetX + yTitleX, y: offsetY + yCenter, rotation: -90, isTitle: true });
       }
 
       // Emit axis labels callback

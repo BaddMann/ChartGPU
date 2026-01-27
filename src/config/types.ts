@@ -295,8 +295,10 @@ export interface LegendItem {
 export interface AxisLabel {
   readonly axis: 'x' | 'y';
   readonly text: string;
-  /** CSS pixels from canvas edge (x-axis: from left; y-axis: from bottom). */
-  readonly position: number;
+  /** CSS pixel x coordinate relative to canvas (for worker thread positioning). */
+  readonly x: number;
+  /** CSS pixel y coordinate relative to canvas (for worker thread positioning). */
+  readonly y: number;
   /** Degrees, for rotated x-axis labels. */
   readonly rotation?: number;
   /** True for axis title vs tick label. */

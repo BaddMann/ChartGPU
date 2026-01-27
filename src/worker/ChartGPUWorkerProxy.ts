@@ -632,12 +632,17 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
     let lastWidth = canvas.clientWidth;
     let lastHeight = canvas.clientHeight;
     
-    this.resizeObserver = new ResizeObserver(() => {
+    this.resizeObserver = new ResizeObserver((entries) => {
       if (this.isDisposed) return;
+      if (!entries[0]) return;
       
-      // Measure new dimensions from canvas (CSS pixels)
-      const newWidth = canvas.clientWidth;
-      const newHeight = canvas.clientHeight;
+      // CRITICAL: After transferControlToOffscreen(), canvas.clientWidth/Height are invalid!
+      // Use contentBoxSize from ResizeObserverEntry instead
+      const contentBoxSize = entries[0].contentBoxSize?.[0];
+      if (!contentBoxSize) return;
+      
+      const newWidth = contentBoxSize.inlineSize;
+      const newHeight = contentBoxSize.blockSize;
       
       // Check if dimensions actually changed (ResizeObserver can fire on layout shifts)
       if (newWidth === lastWidth && newHeight === lastHeight) {
@@ -661,16 +666,15 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
           const { width, height } = this.pendingResize;
           this.pendingResize = null;
           
-          // Send resize message to worker with physical pixels
+          // Send resize message to worker with CSS pixels
+          // WorkerController will multiply by devicePixelRatio to get physical pixels
           const dpr = this.currentDpr;
-          const physicalWidth = Math.max(1, Math.round(width * dpr));
-          const physicalHeight = Math.max(1, Math.round(height * dpr));
           
           this.sendMessage({
             type: 'resize',
             chartId: this.chartId,
-            width: physicalWidth,
-            height: physicalHeight,
+            width: Math.max(1, width),  // CSS pixels, minimum 1
+            height: Math.max(1, height),  // CSS pixels, minimum 1
             devicePixelRatio: dpr,
             requestRender: true,
           });
@@ -992,7 +996,7 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
       
       // Add x-axis labels
       for (const label of axisLabelsMsg.xLabels) {
-        this.textOverlay.addLabel(label.text, label.position, 0, {
+        this.textOverlay.addLabel(label.text, label.x, label.y, {
           fontSize: themeConfig.fontSize,
           color: themeConfig.textColor,
           anchor: 'middle',
@@ -1002,7 +1006,7 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
       
       // Add y-axis labels
       for (const label of axisLabelsMsg.yLabels) {
-        this.textOverlay.addLabel(label.text, 0, label.position, {
+        this.textOverlay.addLabel(label.text, label.x, label.y, {
           fontSize: themeConfig.fontSize,
           color: themeConfig.textColor,
           anchor: 'end',
