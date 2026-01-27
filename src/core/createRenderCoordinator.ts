@@ -3700,6 +3700,81 @@ export function createRenderCoordinator(
         pieSlice,
         candlestick,
       });
+      return;
+    }
+
+    if (type === 'wheel') {
+      // Handle mouse wheel zoom (only when inside grid and zoom is enabled)
+      if (!isInGrid || !zoomState) return;
+      
+      const deltaX = event.deltaX ?? 0;
+      const deltaY = event.deltaY ?? 0;
+      const deltaMode = event.deltaMode ?? 0;
+      
+      // Normalize delta to CSS pixels
+      const normalizeWheelDelta = (delta: number, basis: number): number => {
+        if (!Number.isFinite(delta) || delta === 0) return 0;
+        
+        switch (deltaMode) {
+          case 1: // DOM_DELTA_LINE
+            return delta * 16;
+          case 2: // DOM_DELTA_PAGE
+            return delta * (Number.isFinite(basis) && basis > 0 ? basis : 800);
+          default: // DOM_DELTA_PIXEL
+            return delta;
+        }
+      };
+      
+      const deltaYCss = normalizeWheelDelta(deltaY, plotHeightCss);
+      const deltaXCss = normalizeWheelDelta(deltaX, plotWidthCss);
+      
+      // Check if horizontal scroll is dominant (pan operation)
+      if (Math.abs(deltaXCss) > Math.abs(deltaYCss) && deltaXCss !== 0) {
+        const { start, end } = zoomState.getRange();
+        const span = end - start;
+        if (!Number.isFinite(span) || span === 0) return;
+        
+        // Convert horizontal scroll delta to percent pan
+        // Positive deltaX = scroll right = pan right (show earlier data)
+        const deltaPct = (deltaXCss / plotWidthCss) * span;
+        if (!Number.isFinite(deltaPct) || deltaPct === 0) return;
+        
+        zoomState.pan(deltaPct);
+        return;
+      }
+      
+      // Vertical scroll zoom logic
+      if (deltaYCss === 0) return;
+      
+      // Calculate zoom factor from wheel delta
+      // Positive delta = scroll down = zoom out; negative = zoom in
+      const abs = Math.abs(deltaYCss);
+      if (!Number.isFinite(abs) || abs === 0) return;
+      
+      // Cap extreme deltas (some devices can emit huge values)
+      const capped = Math.min(abs, 200);
+      const sensitivity = 0.002;
+      const factor = Math.exp(capped * sensitivity);
+      
+      if (!(factor > 1)) return;
+      
+      const { start, end } = zoomState.getRange();
+      const span = end - start;
+      if (!Number.isFinite(span) || span === 0) return;
+      
+      // Calculate zoom center based on pointer position in plot
+      const r = Math.min(1, Math.max(0, gridX / plotWidthCss));
+      const centerPct = Math.min(100, Math.max(0, start + r * span));
+      
+      // Apply zoom
+      if (deltaYCss < 0) {
+        zoomState.zoomIn(centerPct, factor);
+      } else {
+        zoomState.zoomOut(centerPct, factor);
+      }
+      
+      requestRender();
+      return;
     }
   };
 

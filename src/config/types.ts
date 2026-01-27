@@ -308,7 +308,7 @@ export interface AxisLabel {
  * Pre-computed grid coordinates eliminate redundant computation in worker.
  */
 export interface PointerEventData {
-  readonly type: 'move' | 'click' | 'leave';
+  readonly type: 'move' | 'click' | 'leave' | 'wheel';
   /** Canvas-local CSS pixels. */
   readonly x: number;
   /** Canvas-local CSS pixels. */
@@ -325,6 +325,14 @@ export interface PointerEventData {
   readonly isInGrid: boolean;
   /** Event timestamp in milliseconds for gesture detection. */
   readonly timestamp: number;
+  /** Wheel event delta X (only for type: 'wheel'). */
+  readonly deltaX?: number;
+  /** Wheel event delta Y (only for type: 'wheel'). */
+  readonly deltaY?: number;
+  /** Wheel event delta Z (only for type: 'wheel'). */
+  readonly deltaZ?: number;
+  /** Wheel event delta mode: 0 = pixels, 1 = lines, 2 = pages (only for type: 'wheel'). */
+  readonly deltaMode?: number;
 }
 
 /**

@@ -190,17 +190,6 @@ interface SerializedPointerEvent {
   readonly timestamp: number;
 }
 
-/**
- * Serialized wheel event data for worker communication.
- * Includes all pointer event fields plus scroll deltas.
- */
-interface SerializedWheelEvent extends SerializedPointerEvent {
-  readonly type: 'wheel';
-  readonly deltaX: number;
-  readonly deltaY: number;
-  readonly deltaZ: number;
-  readonly deltaMode: number;
-}
 
 /**
  * Serializes a PointerEvent to a plain object for postMessage transfer.
@@ -248,59 +237,6 @@ function serializePointerEvent(event: PointerEvent, eventType: SerializedPointer
   };
 }
 
-/**
- * Serializes a WheelEvent to a plain object for postMessage transfer.
- * Includes all pointer event fields plus wheel-specific scroll deltas.
- * 
- * **Safety**: Uses explicit fallbacks for missing properties to ensure valid values.
- * Note: Delta values can legitimately be 0, so we use ?? for null/undefined only.
- * 
- * @param event - Native WheelEvent from canvas
- * @returns Serialized wheel event data
- * @throws {Error} If event is null or undefined
- */
-function serializeWheelEvent(event: WheelEvent): SerializedWheelEvent {
-  if (!event) {
-    throw new Error('Cannot serialize null or undefined WheelEvent');
-  }
-  
-  // Validate event has required properties (defensive programming)
-  if (typeof event.clientX !== 'number' || typeof event.clientY !== 'number') {
-    throw new Error('WheelEvent missing required clientX/clientY properties');
-  }
-  
-  if (typeof event.deltaY !== 'number') {
-    throw new Error('WheelEvent missing required deltaY property');
-  }
-  
-  return {
-    type: 'wheel',
-    // Coordinates: Use ?? to preserve legitimate 0 values
-    clientX: event.clientX ?? 0,
-    clientY: event.clientY ?? 0,
-    offsetX: event.offsetX ?? 0,
-    offsetY: event.offsetY ?? 0,
-    // Button state: WheelEvent usually has no button state, default to 0
-    button: event.button ?? 0,
-    buttons: event.buttons ?? 0,
-    // Modifier keys: false is a valid value, use ?? for null/undefined
-    ctrlKey: event.ctrlKey ?? false,
-    shiftKey: event.shiftKey ?? false,
-    altKey: event.altKey ?? false,
-    metaKey: event.metaKey ?? false,
-    // WheelEvent is always from mouse (no touch/pen scrolling)
-    pointerType: 'mouse',
-    isPrimary: true,
-    // Timestamp: Use performance.now() as fallback for consistency
-    timestamp: event.timeStamp ?? performance.now(),
-    // Wheel deltas: Use ?? to preserve legitimate 0 values (no scroll in that direction)
-    deltaX: event.deltaX ?? 0,
-    deltaY: event.deltaY ?? 0,
-    deltaZ: event.deltaZ ?? 0,
-    // Delta mode: 0 = pixels, 1 = lines, 2 = pages
-    deltaMode: event.deltaMode ?? 0,
-  };
-}
 
 /**
  * ChartGPUWorkerProxy - Main-thread proxy for worker-based rendering.
@@ -536,12 +472,49 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
     // Wheel handler - for zoom interactions
     this.boundEventHandlers.wheel = (e: WheelEvent) => {
       if (this.isDisposed || !this.isInitialized) return;
-      const serialized = serializeWheelEvent(e);
+      
+      // Convert WheelEvent to PointerEventData with wheel-specific fields
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      
+      const plotLeftCss = this.cachedOptions.grid?.left ?? 60;
+      const plotTopCss = this.cachedOptions.grid?.top ?? 40;
+      const plotRightCss = this.cachedOptions.grid?.right ?? 20;
+      const plotBottomCss = this.cachedOptions.grid?.bottom ?? 40;
+      const plotWidthCss = rect.width - plotLeftCss - plotRightCss;
+      const plotHeightCss = rect.height - plotTopCss - plotBottomCss;
+      
+      const gridX = x - plotLeftCss;
+      const gridY = y - plotTopCss;
+      const isInGrid = gridX >= 0 && gridX <= plotWidthCss && gridY >= 0 && gridY <= plotHeightCss;
+      
+      const wheelEvent: PointerEventData = {
+        type: 'wheel',
+        x,
+        y,
+        gridX,
+        gridY,
+        plotWidthCss,
+        plotHeightCss,
+        isInGrid,
+        timestamp: e.timeStamp,
+        deltaX: e.deltaX,
+        deltaY: e.deltaY,
+        deltaZ: e.deltaZ,
+        deltaMode: e.deltaMode,
+      };
+      
       this.sendMessage({
         type: 'forwardPointerEvent',
         chartId: this.chartId,
-        event: serialized as unknown as PointerEventData,
+        event: wheelEvent,
       });
+      
+      // Prevent default scroll behavior when zooming
+      if (isInGrid) {
+        e.preventDefault();
+      }
     };
     
     // Attach all event listeners
