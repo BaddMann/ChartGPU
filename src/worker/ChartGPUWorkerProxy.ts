@@ -67,13 +67,6 @@ import type { ZoomState } from '../interaction/createZoomState';
 type AnyChartGPUEventCallback = ChartGPUEventCallback | ChartGPUCrosshairMoveCallback;
 
 /**
- * Dev mode flag for conditional validation.
- * Bundlers (Vite, Rollup, Webpack) will tree-shake the dev-only code blocks in production builds.
- * Set to false in production to eliminate validation overhead.
- */
-const __DEV__ = true;
-
-/**
  * Generates a unique message ID for request/response correlation.
  * Uses timestamp + counter for collision resistance.
  */
@@ -1111,36 +1104,33 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
         typedArray = sourceArray;
       }
       
-      // Dev mode: Check for detached buffer before transfer
-      // Note: Bundlers will tree-shake this block when __DEV__ = false
-      if (__DEV__) {
-        if (typedArray.buffer.byteLength === 0) {
-          console.error(
-            `ChartGPU: Cannot transfer detached ArrayBuffer. ` +
-            `The buffer may have already been transferred to another context.`
-          );
-          return;
-        }
-        
-        // Validate stride alignment
-        const expectedBytes = pointCount * stride;
-        const actualBytes = typedArray.byteLength;
-        if (actualBytes !== expectedBytes) {
-          console.warn(
-            `ChartGPU: Data buffer size mismatch. Expected ${expectedBytes} bytes ` +
-            `(${pointCount} points × ${stride} stride), got ${actualBytes} bytes.`
-          );
-        }
-        
-        // Validate buffer is 4-byte aligned (WebGPU requirement)
-        if (typedArray.byteLength % 4 !== 0) {
-          throw new ChartGPUWorkerError(
-            `Buffer size (${typedArray.byteLength} bytes) is not 4-byte aligned (WebGPU requirement)`,
-            'INVALID_ARGUMENT',
-            'appendData',
-            this.chartId
-          );
-        }
+      // Check for detached buffer before transfer
+      if (typedArray.buffer.byteLength === 0) {
+        console.error(
+          `ChartGPU: Cannot transfer detached ArrayBuffer. ` +
+          `The buffer may have already been transferred to another context.`
+        );
+        return;
+      }
+      
+      // Validate stride alignment
+      const expectedBytes = pointCount * stride;
+      const actualBytes = typedArray.byteLength;
+      if (actualBytes !== expectedBytes) {
+        console.warn(
+          `ChartGPU: Data buffer size mismatch. Expected ${expectedBytes} bytes ` +
+          `(${pointCount} points × ${stride} stride), got ${actualBytes} bytes.`
+        );
+      }
+      
+      // Validate buffer is 4-byte aligned (WebGPU requirement)
+      if (typedArray.byteLength % 4 !== 0) {
+        throw new ChartGPUWorkerError(
+          `Buffer size (${typedArray.byteLength} bytes) is not 4-byte aligned (WebGPU requirement)`,
+          'INVALID_ARGUMENT',
+          'appendData',
+          this.chartId
+        );
       }
       
       // CRITICAL: Zero-copy optimization - transfer the entire underlying buffer
@@ -1156,13 +1146,11 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
         // Note: slice() returns ArrayBufferLike but will always be ArrayBuffer in practice
         buffer = typedArray.buffer.slice(typedArray.byteOffset, typedArray.byteOffset + typedArray.byteLength) as ArrayBuffer;
         
-        if (__DEV__) {
-          console.warn(
-            `ChartGPU: Typed array uses a subarray view (byteOffset=${typedArray.byteOffset}). ` +
-            `A buffer copy is required for transfer. For best performance, ensure typed arrays ` +
-            `own their entire underlying buffer.`
-          );
-        }
+        console.warn(
+          `ChartGPU: Typed array uses a subarray view (byteOffset=${typedArray.byteOffset}). ` +
+          `A buffer copy is required for transfer. For best performance, ensure typed arrays ` +
+          `own their entire underlying buffer.`
+        );
       }
       
       this.sendMessage({
@@ -1184,20 +1172,17 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
       return; // No-op for empty arrays
     }
     
-    // Dev mode: Warn about large tuple arrays
-    // Note: Bundlers will tree-shake this block when __DEV__ = false
-    if (__DEV__) {
-      if (Array.isArray(newPoints) && newPoints.length > 10_000) {
-        console.warn(
-          `ChartGPU: appendData called with ${newPoints.length.toLocaleString()} points as array. ` +
-          `Consider using Float32Array for better performance:\n\n` +
-          `  import { packDataPoints } from 'chart-gpu';\n` +
-          `  const packed = packDataPoints(points);\n` +
-          `  chart.appendData(seriesIndex, packed, 'xy');\n\n` +
-          `This can reduce memory usage by 50% and eliminate serialization overhead ` +
-          `(~${(newPoints.length * 0.00002).toFixed(2)}ms saved per append).`
-        );
-      }
+    // Warn about large tuple arrays for better performance
+    if (Array.isArray(newPoints) && newPoints.length > 10_000) {
+      console.warn(
+        `ChartGPU: appendData called with ${newPoints.length.toLocaleString()} points as array. ` +
+        `Consider using Float32Array for better performance:\n\n` +
+        `  import { packDataPoints } from 'chart-gpu';\n` +
+        `  const packed = packDataPoints(points);\n` +
+        `  chart.appendData(seriesIndex, packed, 'xy');\n\n` +
+        `This can reduce memory usage by 50% and eliminate serialization overhead ` +
+        `(~${(newPoints.length * 0.00002).toFixed(2)}ms saved per append).`
+      );
     }
     
     const [data, stride] = serializeDataPoints(newPoints);
@@ -1635,6 +1620,29 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
     
     // Cache performance capabilities from worker
     this.cachedPerformanceCapabilities = message.performanceCapabilities;
+    
+    // CRITICAL: Initialize zoom range from ready message
+    // The ready message now includes the initial zoom range to avoid race conditions
+    // where the slider is created with default [0, 100] before the worker's zoomChange message is processed
+    if (message.initialZoomRange) {
+      // Update cached zoom range
+      this.cachedZoomRange = { start: message.initialZoomRange.start, end: message.initialZoomRange.end };
+      
+      // If slider exists, update it with the correct initial zoom range
+      if (this.zoomState) {
+        const currentRange = this.zoomState.getRange();
+        // Only update if the slider is still at the default [0, 100] but actual range differs
+        if ((currentRange.start === 0 && currentRange.end === 100) &&
+            (message.initialZoomRange.start !== 0 || message.initialZoomRange.end !== 100)) {
+          this.isProcessingWorkerZoomUpdate = true;
+          try {
+            this.zoomState.setRange(message.initialZoomRange.start, message.initialZoomRange.end);
+          } finally {
+            this.isProcessingWorkerZoomUpdate = false;
+          }
+        }
+      }
+    }
     
     const pending = this.pendingRequests.get(message.messageId);
     if (pending) {

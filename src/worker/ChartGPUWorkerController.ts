@@ -511,6 +511,11 @@ export class ChartGPUWorkerController {
       };
       this.charts.set(msg.chartId, instance);
 
+      // Get initial zoom range for inclusion in ready message
+      // This ensures the proxy has the correct zoom range immediately upon initialization
+      // rather than waiting for a separate zoomChange message to be processed
+      const initialZoomRange = coordinator.getZoomRange();
+
       // Set up render loop on the MessageChannel
       // Null check satisfies TypeScript - renderChannel is guaranteed non-null at this point
       // PERFORMANCE CRITICAL: Cache references in closure to eliminate Map lookup on every frame
@@ -600,13 +605,16 @@ export class ChartGPUWorkerController {
         performanceMetricsSupported: true, // Always supported in worker
       };
 
-      // Emit ready message with matching messageId
+      // Emit ready message with matching messageId and initial zoom range
+      // CRITICAL: Including initial zoom range in ready message ensures the proxy
+      // can initialize its slider with the correct range before any async message processing
       this.emit({
         type: 'ready',
         chartId: msg.chartId,
         messageId: msg.messageId,
         capabilities,
         performanceCapabilities,
+        initialZoomRange,
       });
 
       // Trigger initial render through MessageChannel to track performance metrics

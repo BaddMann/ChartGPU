@@ -233,6 +233,8 @@ export interface ReadyMessage {
   };
   /** Performance capabilities of the worker environment. */
   readonly performanceCapabilities: PerformanceCapabilities;
+  /** Initial zoom range if zoom is enabled, otherwise null. */
+  readonly initialZoomRange: { readonly start: number; readonly end: number } | null;
 }
 
 /**
