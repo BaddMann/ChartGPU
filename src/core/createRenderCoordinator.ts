@@ -41,6 +41,7 @@ import type { LinearScale } from '../utils/scales';
 import { parseCssColorToGPUColor, parseCssColorToRgba01 } from '../utils/colors';
 import { createTextOverlay } from '../components/createTextOverlay';
 import type { TextOverlay, TextOverlayAnchor } from '../components/createTextOverlay';
+import { getAxisTitleFontSize, styleAxisLabelSpan } from '../utils/axisLabelStyling';
 import { createLegend } from '../components/createLegend';
 import type { Legend } from '../components/createLegend';
 import { createTooltip } from '../components/createTooltip';
@@ -3550,19 +3551,19 @@ export function createRenderCoordinator(
         const label = isTimeXAxis ? formatTimeTickValue(v, visibleXRangeMs) : formatTickValue(xFormatter!, v);
         if (label == null) continue;
 
-        // Add to DOM overlay if it exists
+        // Collect label data for callback (worker mode)
+        const axisLabel: AxisLabel = { axis: 'x', text: label, x: offsetX + xCss, y: offsetY + xLabelY, anchor, isTitle: false };
+        collectedXLabels.push(axisLabel);
+
+        // Add to DOM overlay if it exists (main thread mode)
         if (overlay) {
           const span = overlay.addLabel(label, offsetX + xCss, offsetY + xLabelY, {
             fontSize: currentOptions.theme.fontSize,
             color: currentOptions.theme.textColor,
             anchor,
           });
-          span.dir = 'auto';
-          span.style.fontFamily = currentOptions.theme.fontFamily;
+          styleAxisLabelSpan(span, axisLabel, currentOptions.theme);
         }
-
-        // Always collect for callback
-        collectedXLabels.push({ axis: 'x', text: label, x: offsetX + xCss, y: offsetY + xLabelY, anchor, isTitle: false });
       }
 
       const yTickCount = DEFAULT_TICK_COUNT;
@@ -3583,26 +3584,23 @@ export function createRenderCoordinator(
         const label = formatTickValue(yFormatter, v);
         if (label == null) continue;
 
-        // Add to DOM overlay if it exists
+        // Collect label data for callback (worker mode)
+        const axisLabel: AxisLabel = { axis: 'y', text: label, x: offsetX + yLabelX, y: offsetY + yCss, anchor: 'end', isTitle: false };
+        collectedYLabels.push(axisLabel);
+
+        // Add to DOM overlay if it exists (main thread mode)
         if (overlay) {
           const span = overlay.addLabel(label, offsetX + yLabelX, offsetY + yCss, {
             fontSize: currentOptions.theme.fontSize,
             color: currentOptions.theme.textColor,
             anchor: 'end',
           });
-          span.dir = 'auto';
-          span.style.fontFamily = currentOptions.theme.fontFamily;
+          styleAxisLabelSpan(span, axisLabel, currentOptions.theme);
           ySpans.push(span);
         }
-
-        // Always collect for callback
-        collectedYLabels.push({ axis: 'y', text: label, x: offsetX + yLabelX, y: offsetY + yCss, anchor: 'end', isTitle: false });
       }
 
-      const axisNameFontSize = Math.max(
-        currentOptions.theme.fontSize + 1,
-        Math.round(currentOptions.theme.fontSize * 1.15)
-      );
+      const axisNameFontSize = getAxisTitleFontSize(currentOptions.theme.fontSize);
 
       const xAxisName = currentOptions.xAxis.name?.trim() ?? '';
       if (xAxisName.length > 0) {
@@ -3610,20 +3608,19 @@ export function createRenderCoordinator(
         const xTitleY =
           xLabelY + currentOptions.theme.fontSize * 0.5 + LABEL_PADDING_CSS_PX + axisNameFontSize * 0.5;
 
-        // Add to DOM overlay if it exists
+        // Collect label data for callback (worker mode)
+        const axisLabel: AxisLabel = { axis: 'x', text: xAxisName, x: offsetX + xCenter, y: offsetY + xTitleY, anchor: 'middle', isTitle: true };
+        collectedXLabels.push(axisLabel);
+
+        // Add to DOM overlay if it exists (main thread mode)
         if (overlay) {
           const span = overlay.addLabel(xAxisName, offsetX + xCenter, offsetY + xTitleY, {
             fontSize: axisNameFontSize,
             color: currentOptions.theme.textColor,
             anchor: 'middle',
           });
-          span.dir = 'auto';
-          span.style.fontFamily = currentOptions.theme.fontFamily;
-          span.style.fontWeight = '600';
+          styleAxisLabelSpan(span, axisLabel, currentOptions.theme);
         }
-
-        // Always collect for callback
-        collectedXLabels.push({ axis: 'x', text: xAxisName, x: offsetX + xCenter, y: offsetY + xTitleY, anchor: 'middle', isTitle: true });
       }
 
       const yAxisName = currentOptions.yAxis.name?.trim() ?? '';
@@ -3637,7 +3634,11 @@ export function createRenderCoordinator(
         const yTickLabelLeft = yLabelX - maxTickLabelWidth;
         const yTitleX = yTickLabelLeft - LABEL_PADDING_CSS_PX - axisNameFontSize * 0.5;
 
-        // Add to DOM overlay if it exists
+        // Collect label data for callback (worker mode)
+        const axisLabel: AxisLabel = { axis: 'y', text: yAxisName, x: offsetX + yTitleX, y: offsetY + yCenter, anchor: 'middle', rotation: -90, isTitle: true };
+        collectedYLabels.push(axisLabel);
+
+        // Add to DOM overlay if it exists (main thread mode)
         if (overlay) {
           const span = overlay.addLabel(yAxisName, offsetX + yTitleX, offsetY + yCenter, {
             fontSize: axisNameFontSize,
@@ -3645,13 +3646,8 @@ export function createRenderCoordinator(
             anchor: 'middle',
             rotation: -90,
           });
-          span.dir = 'auto';
-          span.style.fontFamily = currentOptions.theme.fontFamily;
-          span.style.fontWeight = '600';
+          styleAxisLabelSpan(span, axisLabel, currentOptions.theme);
         }
-
-        // Always collect for callback
-        collectedYLabels.push({ axis: 'y', text: yAxisName, x: offsetX + yTitleX, y: offsetY + yCenter, anchor: 'middle', rotation: -90, isTitle: true });
       }
 
       // Emit axis labels callback when DOM overlays are disabled (worker mode)

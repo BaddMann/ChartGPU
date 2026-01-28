@@ -63,6 +63,7 @@ import { createDataZoomSlider } from '../components/createDataZoomSlider';
 import type { DataZoomSlider } from '../components/createDataZoomSlider';
 import { createZoomState } from '../interaction/createZoomState';
 import type { ZoomState } from '../interaction/createZoomState';
+import { addAxisLabelsToOverlay } from '../utils/axisLabelStyling';
 
 type AnyChartGPUEventCallback = ChartGPUEventCallback | ChartGPUCrosshairMoveCallback;
 
@@ -989,44 +990,16 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
     
     // Apply axis labels update
     if (axisLabelsMsg && this.textOverlay) {
-      this.textOverlay.clear();
-      
       // Get theme config for label styling
       const themeConfig = this.resolveThemeConfig();
-      const axisNameFontSize = Math.max(
-        themeConfig.fontSize + 1,
-        Math.round(themeConfig.fontSize * 1.15)
+
+      // Use shared utility for consistent styling
+      addAxisLabelsToOverlay(
+        this.textOverlay,
+        axisLabelsMsg.xLabels,
+        axisLabelsMsg.yLabels,
+        themeConfig
       );
-
-      // Add x-axis labels
-      for (const label of axisLabelsMsg.xLabels) {
-        const span = this.textOverlay.addLabel(label.text, label.x, label.y, {
-          fontSize: label.isTitle ? axisNameFontSize : themeConfig.fontSize,
-          color: themeConfig.textColor,
-          anchor: label.anchor ?? 'middle',
-          rotation: label.rotation,
-        });
-        span.dir = 'auto';
-        span.style.fontFamily = themeConfig.fontFamily;
-        if (label.isTitle) {
-          span.style.fontWeight = '600';
-        }
-      }
-
-      // Add y-axis labels
-      for (const label of axisLabelsMsg.yLabels) {
-        const span = this.textOverlay.addLabel(label.text, label.x, label.y, {
-          fontSize: label.isTitle ? axisNameFontSize : themeConfig.fontSize,
-          color: themeConfig.textColor,
-          anchor: label.anchor ?? 'end',
-          rotation: label.rotation,
-        });
-        span.dir = 'auto';
-        span.style.fontFamily = themeConfig.fontFamily;
-        if (label.isTitle) {
-          span.style.fontWeight = '600';
-        }
-      }
     }
     
     // Clear pending updates

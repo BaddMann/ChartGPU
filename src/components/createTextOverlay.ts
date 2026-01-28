@@ -47,7 +47,7 @@ export function createTextOverlay(container: HTMLElement): TextOverlay {
   overlay.style.position = 'absolute';
   overlay.style.inset = '0';
   overlay.style.pointerEvents = 'none';
-  overlay.style.overflow = 'hidden';
+  overlay.style.overflow = 'visible';
   container.appendChild(overlay);
 
   let disposed = false;
@@ -103,3 +103,4 @@ export function createTextOverlay(container: HTMLElement): TextOverlay {
   return { clear, addLabel, dispose };
 }
 
+  
