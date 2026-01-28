@@ -66,6 +66,28 @@ const getEl = <T extends HTMLElement>(id: string): T => {
   return el as T;
 };
 
+const lowerBoundByX = (points: ReadonlyArray<ScatterPointTuple>, x: number): number => {
+  let lo = 0;
+  let hi = points.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (points[mid]![0] < x) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+};
+
+const upperBoundByX = (points: ReadonlyArray<ScatterPointTuple>, x: number): number => {
+  let lo = 0;
+  let hi = points.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (points[mid]![0] <= x) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+};
+
 async function main(): Promise<void> {
   const container = getEl<HTMLDivElement>('chart');
 
@@ -73,6 +95,8 @@ async function main(): Promise<void> {
   const binSizeValue = getEl<HTMLSpanElement>('binSizeValue');
   const colormapSelect = getEl<HTMLSelectElement>('colormap');
   const normalizationSelect = getEl<HTMLSelectElement>('normalization');
+  const totalPointsEl = getEl<HTMLSpanElement>('totalPoints');
+  const binnedPointsEl = getEl<HTMLSpanElement>('binnedPoints');
 
   binSizeValue.textContent = binSizeInput.value;
   binSizeInput.addEventListener('input', () => {
@@ -80,6 +104,9 @@ async function main(): Promise<void> {
   });
 
   const points = await createPointsChunked(1_000_000, 1337);
+  const n = points.length;
+  const fmt = new Intl.NumberFormat(undefined);
+  totalPointsEl.textContent = fmt.format(n);
 
   const baseOptions: ChartGPUOptions = {
     theme: 'dark',
@@ -100,6 +127,43 @@ async function main(): Promise<void> {
   };
 
   const chart = await ChartGPU.create(container, baseOptions);
+
+  // Since points are sorted by x, we can estimate how many points the density pass will bin by
+  // mapping percent-space zoom to an x-window and doing a binary search.
+  const xMin = n > 0 ? points[0]![0] : 0;
+  const xMax = n > 0 ? points[n - 1]![0] : 1;
+  const xSpan = xMax - xMin;
+
+  let lastBinnedText = '';
+  let lastUpdateMs = 0;
+  const updateBinnedReadout = (): void => {
+    const zoom = chart.getZoomRange();
+    const startPct = Math.max(0, Math.min(100, zoom?.start ?? 0));
+    const endPct = Math.max(0, Math.min(100, zoom?.end ?? 100));
+    const a = Math.min(startPct, endPct) / 100;
+    const b = Math.max(startPct, endPct) / 100;
+
+    const visibleXMin = xMin + a * xSpan;
+    const visibleXMax = xMin + b * xSpan;
+    const i0 = lowerBoundByX(points, visibleXMin);
+    const i1 = upperBoundByX(points, visibleXMax);
+    const visibleCount = Math.max(0, i1 - i0);
+
+    const text = fmt.format(visibleCount);
+    if (text !== lastBinnedText) {
+      lastBinnedText = text;
+      binnedPointsEl.textContent = text;
+    }
+  };
+
+  // Update frequently while rendering, but throttle DOM writes.
+  chart.onPerformanceUpdate(() => {
+    const now = performance.now();
+    if (now - lastUpdateMs < 100) return;
+    lastUpdateMs = now;
+    updateBinnedReadout();
+  });
+  updateBinnedReadout();
 
   const apply = (): void => {
     chart.setOption({
