@@ -1,7 +1,7 @@
 import { GPUContext } from './core/GPUContext';
 import { createRenderCoordinator } from './core/createRenderCoordinator';
 import type { RenderCoordinator } from './core/createRenderCoordinator';
-import { resolveOptions } from './config/OptionResolver';
+import { resolveOptionsForChart } from './config/OptionResolver';
 import type { ResolvedCandlestickSeriesConfig, ResolvedChartGPUOptions, ResolvedPieSeriesConfig } from './config/OptionResolver';
 import type { ChartGPUOptions, DataPoint, DataPointTuple, OHLCDataPoint, OHLCDataPointTuple, PieCenter, PieRadius } from './config/types';
 import { createDataZoomSlider } from './components/createDataZoomSlider';
@@ -14,6 +14,32 @@ import { findPieSlice } from './interaction/findPieSlice';
 import { createLinearScale } from './utils/scales';
 import type { LinearScale } from './utils/scales';
 import { checkWebGPUSupport } from './utils/checkWebGPU';
+import type {
+  PerformanceMetrics,
+  PerformanceCapabilities,
+  ExactFPS,
+  Milliseconds,
+  Bytes,
+  FrameTimeStats,
+  GPUTimingStats,
+  MemoryStats,
+  FrameDropStats,
+} from './config/types';
+
+/**
+ * Circular buffer size for frame timestamps (120 frames = 2 seconds at 60fps).
+ */
+const FRAME_BUFFER_SIZE = 120;
+
+/**
+ * Expected frame time at 60fps (16.67ms).
+ */
+const EXPECTED_FRAME_TIME_MS = 1000 / 60;
+
+/**
+ * Frame drop threshold multiplier (1.5x expected frame time).
+ */
+const FRAME_DROP_THRESHOLD_MULTIPLIER = 1.5;
 
 export interface ChartGPUInstance {
   readonly options: Readonly<ChartGPUOptions>;
@@ -66,6 +92,28 @@ export interface ChartGPUInstance {
    * No-op when zoom is disabled.
    */
   setZoomRange(start: number, end: number): void;
+  /**
+   * Gets the latest performance metrics.
+   * Returns exact FPS and detailed frame statistics.
+   * 
+   * @returns Current performance metrics, or null if not available
+   */
+  getPerformanceMetrics(): Readonly<PerformanceMetrics> | null;
+  /**
+   * Gets the performance capabilities of the current environment.
+   * Indicates which performance features are supported.
+   * 
+   * @returns Performance capabilities, or null if not initialized
+   */
+  getPerformanceCapabilities(): Readonly<PerformanceCapabilities> | null;
+  /**
+   * Registers a callback to be notified of performance metric updates.
+   * Callback is invoked every frame with the latest metrics.
+   * 
+   * @param callback - Function to call with updated metrics
+   * @returns Unsubscribe function to remove the callback
+   */
+  onPerformanceUpdate(callback: (metrics: Readonly<PerformanceMetrics>) => void): () => void;
 }
 
 // Type-only alias so callsites can write `ChartGPU[]` for chart instances (while `ChartGPU` the value
@@ -107,10 +155,6 @@ const DEFAULT_TAP_MAX_TIME_MS = 500;
 
 type Bounds = Readonly<{ xMin: number; xMax: number; yMin: number; yMax: number }>;
 
-const DATA_ZOOM_SLIDER_HEIGHT_CSS_PX = 32;
-const DATA_ZOOM_SLIDER_MARGIN_TOP_CSS_PX = 8;
-const DATA_ZOOM_SLIDER_RESERVE_CSS_PX = DATA_ZOOM_SLIDER_HEIGHT_CSS_PX + DATA_ZOOM_SLIDER_MARGIN_TOP_CSS_PX;
-
 const isTupleDataPoint = (p: DataPoint): p is DataPointTuple => Array.isArray(p);
 const isTupleOHLCDataPoint = (p: OHLCDataPoint): p is OHLCDataPointTuple => Array.isArray(p);
 
@@ -125,18 +169,6 @@ const getOHLCClose = (p: OHLCDataPoint): number => (isTupleOHLCDataPoint(p) ? p[
 const hasSliderDataZoom = (options: ChartGPUOptions): boolean => options.dataZoom?.some((z) => z?.type === 'slider') ?? false;
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
-
-const resolveOptionsForChart = (options: ChartGPUOptions): ResolvedChartGPUOptions => {
-  const base: ResolvedChartGPUOptions = { ...resolveOptions(options), tooltip: options.tooltip };
-  if (!hasSliderDataZoom(options)) return base;
-  return {
-    ...base,
-    grid: {
-      ...base.grid,
-      bottom: base.grid.bottom + DATA_ZOOM_SLIDER_RESERVE_CSS_PX,
-    },
-  };
-};
 
 type InteractionScalesCache = {
   rectWidthCss: number;
@@ -524,6 +556,19 @@ export async function createChartGPU(
   let lastConfigured: { width: number; height: number; format: GPUTextureFormat } | null = null;
   let isDirty = true;
 
+  // Performance tracking state
+  const frameTimestamps = new Float64Array(FRAME_BUFFER_SIZE);
+  let frameTimestampIndex = 0;
+  let frameTimestampCount = 0;
+  let totalFrames = 0;
+  let totalDroppedFrames = 0;
+  let consecutiveDroppedFrames = 0;
+  let lastDropTimestamp = 0;
+  const startTime = performance.now();
+  let lastFrameTime = 0;
+  let lastCPUTime = 0;
+  const performanceUpdateCallbacks = new Set<(metrics: Readonly<PerformanceMetrics>) => void>();
+
   const hasHoverListeners = (): boolean => listeners.mouseover.size > 0 || listeners.mouseout.size > 0;
   const hasClickListeners = (): boolean => listeners.click.size > 0;
 
@@ -542,12 +587,48 @@ export async function createChartGPU(
       scheduledRaf = null;
       if (disposed) return;
 
+      // Record frame timestamp BEFORE rendering
+      const frameStartTime = performance.now();
+      frameTimestamps[frameTimestampIndex] = frameStartTime;
+      frameTimestampIndex = (frameTimestampIndex + 1) % FRAME_BUFFER_SIZE;
+      if (frameTimestampCount < FRAME_BUFFER_SIZE) {
+        frameTimestampCount++;
+      }
+      totalFrames++;
+
+      // Frame drop detection (only after first frame)
+      if (lastFrameTime > 0) {
+        const deltaTime = frameStartTime - lastFrameTime;
+        if (deltaTime > EXPECTED_FRAME_TIME_MS * FRAME_DROP_THRESHOLD_MULTIPLIER) {
+          totalDroppedFrames++;
+          consecutiveDroppedFrames++;
+          lastDropTimestamp = frameStartTime;
+        } else {
+          // Reset consecutive counter on successful frame
+          consecutiveDroppedFrames = 0;
+        }
+      }
+      lastFrameTime = frameStartTime;
+
       // Requirement: on RAF tick, call resize() first.
       resizeInternal(false);
       
       if (isDirty) {
         isDirty = false;
         coordinator?.render();
+      }
+
+      const frameEndTime = performance.now();
+      lastCPUTime = frameEndTime - frameStartTime;
+
+      // Calculate and emit performance metrics
+      const metrics = calculatePerformanceMetrics();
+      for (const callback of performanceUpdateCallbacks) {
+        try {
+          callback(metrics);
+        } catch (error) {
+          console.error('Error in performance update callback:', error);
+        }
       }
     });
   };
@@ -575,6 +656,10 @@ export async function createChartGPU(
     disposeDataZoomSlider();
     disposeDataZoomSliderHost();
   };
+
+  const DATA_ZOOM_SLIDER_HEIGHT_CSS_PX = 32;
+  const DATA_ZOOM_SLIDER_MARGIN_TOP_CSS_PX = 8;
+  const DATA_ZOOM_SLIDER_RESERVE_CSS_PX = DATA_ZOOM_SLIDER_HEIGHT_CSS_PX + DATA_ZOOM_SLIDER_MARGIN_TOP_CSS_PX;
 
   const ensureDataZoomSliderHost = (): HTMLDivElement => {
     if (dataZoomSliderHost) return dataZoomSliderHost;
@@ -883,6 +968,111 @@ export async function createChartGPU(
     return {
       match: cartesianMatch ? ({ kind: 'cartesian', match: cartesianMatch } as const) : null,
       isInGrid: true,
+    };
+  };
+
+  const calculateExactFPS = (): ExactFPS => {
+    if (frameTimestampCount < 2) {
+      return 0 as ExactFPS;
+    }
+
+    const startIndex = (frameTimestampIndex - frameTimestampCount + FRAME_BUFFER_SIZE) % FRAME_BUFFER_SIZE;
+    
+    let totalDelta = 0;
+    for (let i = 1; i < frameTimestampCount; i++) {
+      const prevIndex = (startIndex + i - 1) % FRAME_BUFFER_SIZE;
+      const currIndex = (startIndex + i) % FRAME_BUFFER_SIZE;
+      const delta = frameTimestamps[currIndex] - frameTimestamps[prevIndex];
+      totalDelta += delta;
+    }
+
+    const avgFrameTime = totalDelta / (frameTimestampCount - 1);
+    const fps = avgFrameTime > 0 ? 1000 / avgFrameTime : 0;
+    
+    return fps as ExactFPS;
+  };
+
+  const calculateFrameTimeStats = (): FrameTimeStats => {
+    if (frameTimestampCount < 2) {
+      return {
+        min: 0 as Milliseconds,
+        max: 0 as Milliseconds,
+        avg: 0 as Milliseconds,
+        p50: 0 as Milliseconds,
+        p95: 0 as Milliseconds,
+        p99: 0 as Milliseconds,
+      };
+    }
+
+    const startIndex = (frameTimestampIndex - frameTimestampCount + FRAME_BUFFER_SIZE) % FRAME_BUFFER_SIZE;
+    
+    const deltas = new Array<number>(frameTimestampCount - 1);
+    let min = Number.POSITIVE_INFINITY;
+    let max = Number.NEGATIVE_INFINITY;
+    let sum = 0;
+    
+    for (let i = 1; i < frameTimestampCount; i++) {
+      const prevIndex = (startIndex + i - 1) % FRAME_BUFFER_SIZE;
+      const currIndex = (startIndex + i) % FRAME_BUFFER_SIZE;
+      const delta = frameTimestamps[currIndex] - frameTimestamps[prevIndex];
+      deltas[i - 1] = delta;
+      
+      if (delta < min) min = delta;
+      if (delta > max) max = delta;
+      sum += delta;
+    }
+
+    const avg = sum / deltas.length;
+
+    // Sort for percentile calculations
+    deltas.sort((a, b) => a - b);
+
+    const p50Index = Math.floor(deltas.length * 0.50);
+    const p95Index = Math.floor(deltas.length * 0.95);
+    const p99Index = Math.floor(deltas.length * 0.99);
+
+    return {
+      min: min as Milliseconds,
+      max: max as Milliseconds,
+      avg: avg as Milliseconds,
+      p50: deltas[p50Index] as Milliseconds,
+      p95: deltas[p95Index] as Milliseconds,
+      p99: deltas[p99Index] as Milliseconds,
+    };
+  };
+
+  const calculatePerformanceMetrics = (): PerformanceMetrics => {
+    const fps = calculateExactFPS();
+    const frameTimeStats = calculateFrameTimeStats();
+    
+    const gpuTiming: GPUTimingStats = {
+      enabled: false, // GPU timing not yet implemented for main thread
+      cpuTime: lastCPUTime as Milliseconds,
+      gpuTime: 0 as Milliseconds,
+    };
+    
+    const memory: MemoryStats = {
+      used: 0 as Bytes,
+      peak: 0 as Bytes,
+      allocated: 0 as Bytes,
+    };
+    
+    const frameDrops: FrameDropStats = {
+      totalDrops: totalDroppedFrames,
+      consecutiveDrops: consecutiveDroppedFrames,
+      lastDropTimestamp: lastDropTimestamp as Milliseconds,
+    };
+    
+    const elapsedTime = performance.now() - startTime;
+    
+    return {
+      fps,
+      frameTimeStats,
+      gpuTiming,
+      memory,
+      frameDrops,
+      totalFrames,
+      elapsedTime: elapsedTime as Milliseconds,
     };
   };
 
@@ -1214,6 +1404,25 @@ export async function createChartGPU(
     setZoomRange(start, end) {
       if (disposed) return;
       coordinator?.setZoomRange(start, end);
+    },
+    getPerformanceMetrics() {
+      if (disposed) return null;
+      return calculatePerformanceMetrics();
+    },
+    getPerformanceCapabilities() {
+      if (disposed) return null;
+      return {
+        gpuTimingSupported: false, // Not yet implemented for main thread
+        highResTimerSupported: typeof performance !== 'undefined' && typeof performance.now === 'function',
+        performanceMetricsSupported: true,
+      };
+    },
+    onPerformanceUpdate(callback) {
+      if (disposed) return () => {};
+      performanceUpdateCallbacks.add(callback);
+      return () => {
+        performanceUpdateCallbacks.delete(callback);
+      };
     },
   };
 

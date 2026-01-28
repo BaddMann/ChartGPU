@@ -33,7 +33,11 @@ export interface ZoomState {
   onChange(callback: ZoomRangeChangeCallback): () => void;
 }
 
-const DEFAULT_MIN_SPAN = 0;
+// Minimum span of 0.5% prevents zooming beyond what can be reasonably visualized
+// and prevents the slider UI from becoming unusably collapsed.
+// At 0.5% span, a 500px track shows a 2.5px window, which with 10px handles
+// is still somewhat distinguishable. Below 0.5% the UI becomes meaningless.
+const DEFAULT_MIN_SPAN = 0.5;
 const DEFAULT_MAX_SPAN = 100;
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));

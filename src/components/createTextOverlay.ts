@@ -35,19 +35,30 @@ const getAnchorTransform = (
 };
 
 export function createTextOverlay(container: HTMLElement): TextOverlay {
-  const computedPosition = getComputedStyle(container).position;
+  const computedStyle = getComputedStyle(container);
+  const computedPosition = computedStyle.position;
+  const computedOverflow = computedStyle.overflow;
+
   const didSetRelative = computedPosition === 'static';
+  const didSetOverflowVisible = computedOverflow === 'hidden' || computedOverflow === 'scroll' || computedOverflow === 'auto';
+
   const previousInlinePosition = didSetRelative ? container.style.position : null;
+  const previousInlineOverflow = didSetOverflowVisible ? container.style.overflow : null;
 
   if (didSetRelative) {
     container.style.position = 'relative';
+  }
+
+  if (didSetOverflowVisible) {
+    container.style.overflow = 'visible';
   }
 
   const overlay = document.createElement('div');
   overlay.style.position = 'absolute';
   overlay.style.inset = '0';
   overlay.style.pointerEvents = 'none';
-  overlay.style.overflow = 'hidden';
+  overlay.style.overflow = 'visible';
+  overlay.style.zIndex = '10'; // Above zoom slider (z-index: 4) and other overlays
   container.appendChild(overlay);
 
   let disposed = false;
@@ -97,9 +108,13 @@ export function createTextOverlay(container: HTMLElement): TextOverlay {
       if (previousInlinePosition !== null) {
         container.style.position = previousInlinePosition;
       }
+      if (previousInlineOverflow !== null) {
+        container.style.overflow = previousInlineOverflow;
+      }
     }
   };
 
   return { clear, addLabel, dispose };
 }
 
+  

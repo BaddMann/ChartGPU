@@ -5,7 +5,9 @@ import type {
   ResolvedChartGPUOptions,
   ResolvedPieSeriesConfig,
 } from '../config/OptionResolver';
-import type { AnimationConfig, DataPoint, DataPointTuple, OHLCDataPoint, OHLCDataPointTuple, PieCenter, PieRadius } from '../config/types';
+import type { AnimationConfig, AxisLabel, DataPoint, DataPointTuple, LegendItem, PointerEventData, OHLCDataPoint, OHLCDataPointTuple, PieCenter, PieRadius, TooltipData } from '../config/types';
+import type { SupportedCanvas } from './GPUContext';
+import { isHTMLCanvasElement as isHTMLCanvasElementGPU } from './GPUContext';
 import { createDataStore } from '../data/createDataStore';
 import { sampleSeriesDataPoints } from '../data/sampleSeries';
 import { ohlcSample } from '../data/ohlcSample';
@@ -28,14 +30,18 @@ import { createInsideZoom } from '../interaction/createInsideZoom';
 import { createZoomState } from '../interaction/createZoomState';
 import type { ZoomRange, ZoomState } from '../interaction/createZoomState';
 import { findNearestPoint } from '../interaction/findNearestPoint';
+import type { NearestPointMatch } from '../interaction/findNearestPoint';
 import { findPointsAtX } from '../interaction/findPointsAtX';
 import { computeCandlestickBodyWidthRange, findCandlestick } from '../interaction/findCandlestick';
+import type { CandlestickMatch } from '../interaction/findCandlestick';
 import { findPieSlice } from '../interaction/findPieSlice';
+import type { PieSliceMatch } from '../interaction/findPieSlice';
 import { createLinearScale } from '../utils/scales';
 import type { LinearScale } from '../utils/scales';
 import { parseCssColorToGPUColor, parseCssColorToRgba01 } from '../utils/colors';
 import { createTextOverlay } from '../components/createTextOverlay';
 import type { TextOverlay, TextOverlayAnchor } from '../components/createTextOverlay';
+import { getAxisTitleFontSize, styleAxisLabelSpan } from '../utils/axisLabelStyling';
 import { createLegend } from '../components/createLegend';
 import type { Legend } from '../components/createLegend';
 import { createTooltip } from '../components/createTooltip';
@@ -49,10 +55,38 @@ import type { EasingFunction } from '../utils/easing';
 
 export interface GPUContextLike {
   readonly device: GPUDevice | null;
-  readonly canvas: HTMLCanvasElement | null;
+  readonly canvas: SupportedCanvas | null;
   readonly canvasContext: GPUCanvasContext | null;
   readonly preferredFormat: GPUTextureFormat | null;
   readonly initialized: boolean;
+  readonly devicePixelRatio?: number;
+}
+
+/** Type guard to check if canvas is HTMLCanvasElement (has DOM-specific properties). */
+const isHTMLCanvasElement = isHTMLCanvasElementGPU;
+
+/** Gets canvas CSS width - clientWidth for HTMLCanvasElement, width/DPR for OffscreenCanvas. */
+function getCanvasCssWidth(canvas: SupportedCanvas | null, devicePixelRatio: number = 1): number {
+  if (!canvas) {
+    return 0;
+  }
+  if (isHTMLCanvasElement(canvas)) {
+    return canvas.clientWidth;
+  }
+  // OffscreenCanvas: width property is in device pixels. Convert to CSS pixels by dividing by DPR.
+  return canvas.width / devicePixelRatio;
+}
+
+/** Gets canvas CSS height - clientHeight for HTMLCanvasElement, height/DPR for OffscreenCanvas. */
+function getCanvasCssHeight(canvas: SupportedCanvas | null, devicePixelRatio: number = 1): number {
+  if (!canvas) {
+    return 0;
+  }
+  if (isHTMLCanvasElement(canvas)) {
+    return canvas.clientHeight;
+  }
+  // OffscreenCanvas: height property is in device pixels. Convert to CSS pixels by dividing by DPR.
+  return canvas.height / devicePixelRatio;
 }
 
 export interface RenderCoordinator {
@@ -99,6 +133,11 @@ export interface RenderCoordinator {
    * Returns an unsubscribe function.
    */
   onZoomRangeChange(cb: (range: Readonly<{ start: number; end: number }>) => void): () => void;
+  /**
+   * Accepts a pointer event with pre-computed grid coordinates for worker thread event forwarding.
+   * Only available when domOverlays is false.
+   */
+  handlePointerEvent(event: PointerEventData): void;
   render(): void;
   dispose(): void;
 }
@@ -109,6 +148,53 @@ export type RenderCoordinatorCallbacks = Readonly<{
    * interaction state changes (e.g. crosshair on pointer move).
    */
   readonly onRequestRender?: () => void;
+  /**
+   * When false, DOM overlays (tooltip, legend, text overlay, event manager) are disabled.
+   * Instead, callbacks are used to emit data for external rendering.
+   * Default: true (DOM overlays enabled).
+   */
+  readonly domOverlays?: boolean;
+  /**
+   * Called when tooltip data changes (only when domOverlays is false).
+   * Receives tooltip data including content, params array, and position, or null when hidden.
+   */
+  readonly onTooltipUpdate?: (data: TooltipData | null) => void;
+  /**
+   * Called when legend items change (only when domOverlays is false).
+   */
+  readonly onLegendUpdate?: (items: ReadonlyArray<LegendItem>) => void;
+  /**
+   * Called when axis labels change (only when domOverlays is false).
+   */
+  readonly onAxisLabelsUpdate?: (xLabels: ReadonlyArray<AxisLabel>, yLabels: ReadonlyArray<AxisLabel>) => void;
+  /**
+   * Called when hover state changes (only when domOverlays is false).
+   */
+  readonly onHoverChange?: (payload: ChartGPUEventPayload | null) => void;
+  /**
+   * Called when crosshair moves (only when domOverlays is false).
+   * Receives canvas-local CSS pixel x coordinate, or null when crosshair is hidden.
+   */
+  readonly onCrosshairMove?: (x: number | null) => void;
+  /**
+   * Called when user taps/clicks (only when domOverlays is false).
+   * Includes hit test result with seriesIndex, dataIndex, and value.
+   * Main thread is responsible for tap detection; worker thread performs hit testing.
+   */
+  readonly onClickData?: (payload: {
+    readonly x: number;
+    readonly y: number;
+    readonly gridX: number;
+    readonly gridY: number;
+    readonly isInGrid: boolean;
+    readonly nearest: NearestPointMatch | null;
+    readonly pieSlice: PieSliceMatch | null;
+    readonly candlestick: CandlestickMatch | null;
+  }) => void;
+  /**
+   * Called when GPU device is lost.
+   */
+  readonly onDeviceLost?: (reason: string) => void;
 }>;
 
 type Bounds = Readonly<{ xMin: number; xMax: number; yMin: number; yMax: number }>;
@@ -377,13 +463,23 @@ const computeGridArea = (gpuContext: GPUContextLike, options: ResolvedChartGPUOp
   const canvas = gpuContext.canvas;
   if (!canvas) throw new Error('RenderCoordinator: gpuContext.canvas is required.');
 
+  // GridArea uses:
+  // - Margins (left, right, top, bottom) in CSS pixels
+  // - Canvas dimensions (canvasWidth, canvasHeight) in DEVICE pixels
+  // - devicePixelRatio for CSS-to-device conversion (worker-compatible)
+  // This allows renderers to multiply margins by DPR and subtract from canvas dimensions
+
+  const dpr = gpuContext.devicePixelRatio ?? 1;
+  const devicePixelRatio = (Number.isFinite(dpr) && dpr > 0) ? dpr : 1;
+
   return {
     left: options.grid.left,
     right: options.grid.right,
     top: options.grid.top,
     bottom: options.grid.bottom,
-    canvasWidth: canvas.width,
-    canvasHeight: canvas.height,
+    canvasWidth: canvas.width,      // Device pixels
+    canvasHeight: canvas.height,    // Device pixels
+    devicePixelRatio,               // Explicit DPR for worker compatibility
   };
 };
 
@@ -402,16 +498,36 @@ const withAlpha = (cssColor: string, alphaMultiplier: number): string => {
   return rgba01ToCssRgba([parsed[0], parsed[1], parsed[2], a]);
 };
 
+/**
+ * Estimates the maximum width of Y-axis tick labels in CSS pixels.
+ * Used in worker mode where DOM measurement is not available.
+ *
+ * Uses a heuristic: ~0.6 * fontSize per character for typical numeric labels.
+ * This is conservative and should prevent overlap in most cases.
+ */
+const estimateMaxYTickLabelWidth = (
+  yLabels: ReadonlyArray<{ readonly text: string }>,
+  fontSize: number
+): number => {
+  if (yLabels.length === 0) return 0;
+
+  // Find the longest label text
+  const maxChars = yLabels.reduce((max, label) => Math.max(max, label.text.length), 0);
+
+  // Estimate width: ~0.6 * fontSize per character for typical monospace-ish numeric text
+  // This is conservative to prevent overlap
+  return Math.ceil(maxChars * fontSize * 0.6);
+};
+
 const computePlotClipRect = (
   gridArea: GridArea
 ): { readonly left: number; readonly right: number; readonly top: number; readonly bottom: number } => {
-  const { left, right, top, bottom, canvasWidth, canvasHeight } = gridArea;
-  const dpr = window.devicePixelRatio || 1;
+  const { left, right, top, bottom, canvasWidth, canvasHeight, devicePixelRatio } = gridArea;
 
-  const plotLeft = left * dpr;
-  const plotRight = canvasWidth - right * dpr;
-  const plotTop = top * dpr;
-  const plotBottom = canvasHeight - bottom * dpr;
+  const plotLeft = left * devicePixelRatio;
+  const plotRight = canvasWidth - right * devicePixelRatio;
+  const plotTop = top * devicePixelRatio;
+  const plotBottom = canvasHeight - bottom * devicePixelRatio;
 
   const plotLeftClip = (plotLeft / canvasWidth) * 2.0 - 1.0;
   const plotRightClip = (plotRight / canvasWidth) * 2.0 - 1.0;
@@ -442,13 +558,12 @@ const lerpDomain = (
 const computePlotScissorDevicePx = (
   gridArea: GridArea
 ): { readonly x: number; readonly y: number; readonly w: number; readonly h: number } => {
-  const dpr = window.devicePixelRatio || 1;
-  const { canvasWidth, canvasHeight } = gridArea;
+  const { canvasWidth, canvasHeight, devicePixelRatio } = gridArea;
 
-  const plotLeftDevice = gridArea.left * dpr;
-  const plotRightDevice = canvasWidth - gridArea.right * dpr;
-  const plotTopDevice = gridArea.top * dpr;
-  const plotBottomDevice = canvasHeight - gridArea.bottom * dpr;
+  const plotLeftDevice = gridArea.left * devicePixelRatio;
+  const plotRightDevice = canvasWidth - gridArea.right * devicePixelRatio;
+  const plotTopDevice = gridArea.top * devicePixelRatio;
+  const plotBottomDevice = canvasHeight - gridArea.bottom * devicePixelRatio;
 
   const scissorX = clampInt(Math.floor(plotLeftDevice), 0, Math.max(0, canvasWidth));
   const scissorY = clampInt(Math.floor(plotTopDevice), 0, Math.max(0, canvasHeight));
@@ -1051,7 +1166,7 @@ const computeCandlestickTooltipAnchor = (
   xScale: LinearScale,
   yScale: LinearScale,
   gridArea: GridArea,
-  canvas: HTMLCanvasElement
+  canvas: HTMLCanvasElement | OffscreenCanvas
 ): Readonly<{ x: number; y: number }> | null => {
   const point = match.point;
   
@@ -1079,8 +1194,9 @@ const computeCandlestickTooltipAnchor = (
   const yCanvasCss = gridArea.top + yGridCss;
 
   // Convert to container-local CSS pixels
-  const xContainerCss = canvas.offsetLeft + xCanvasCss;
-  const yContainerCss = canvas.offsetTop + yCanvasCss;
+  // In worker mode (OffscreenCanvas), offsetLeft/offsetTop don't exist - return canvas-local coordinates
+  const xContainerCss = isHTMLCanvasElement(canvas) ? canvas.offsetLeft + xCanvasCss : xCanvasCss;
+  const yContainerCss = isHTMLCanvasElement(canvas) ? canvas.offsetTop + yCanvasCss : yCanvasCss;
 
   if (!Number.isFinite(xContainerCss) || !Number.isFinite(yContainerCss)) {
     return null;
@@ -1181,11 +1297,29 @@ export function createRenderCoordinator(
     throw new Error('RenderCoordinator: gpuContext.canvasContext is required.');
   }
 
+  // Listen for device loss and emit callback
+  // Note: We don't call dispose() here to avoid double-cleanup if user calls dispose() in callback.
+  // The coordinator is effectively non-functional after device loss until re-created.
+  device.lost.then((info) => {
+    callbacks?.onDeviceLost?.(info.message || info.reason || 'unknown');
+  }).catch(() => {
+    // Ignore errors in device.lost promise (can occur if device is destroyed before lost promise resolves)
+  });
+
   const targetFormat = gpuContext.preferredFormat ?? DEFAULT_TARGET_FORMAT;
-  const overlayContainer = gpuContext.canvas.parentElement;
+  
+  // DOM-dependent features (overlays, legends) require HTMLCanvasElement and domOverlays !== false.
+  // OffscreenCanvas is for rendering only.
+  const domOverlaysEnabled = callbacks?.domOverlays !== false;
+  const overlayContainer = domOverlaysEnabled && isHTMLCanvasElement(gpuContext.canvas) ? gpuContext.canvas.parentElement : null;
   const overlay: TextOverlay | null = overlayContainer ? createTextOverlay(overlayContainer) : null;
   const legend: Legend | null = overlayContainer ? createLegend(overlayContainer, 'right') : null;
+  // Text measurement for axis labels. Only available in DOM contexts (not worker threads).
   const tickMeasureCtx: CanvasRenderingContext2D | null = (() => {
+    if (typeof document === 'undefined') {
+      // Worker thread: DOM not available.
+      return null;
+    }
     try {
       const c = document.createElement('canvas');
       return c.getContext('2d');
@@ -1446,7 +1580,54 @@ export function createRenderCoordinator(
   let lastTooltipX: number | null = null;
   let lastTooltipY: number | null = null;
 
-  legend?.update(currentOptions.series, currentOptions.theme);
+  // Helper functions for tooltip/legend/crosshair callbacks
+  const showTooltipInternal = (x: number, y: number, content: string, params: TooltipParams | TooltipParams[]) => {
+    tooltip?.show(x, y, content);
+    if (!domOverlaysEnabled && callbacks?.onTooltipUpdate) {
+      const paramsArray = Array.isArray(params) ? params : [params];
+      callbacks.onTooltipUpdate({ content, params: paramsArray, x, y });
+    }
+  };
+
+  const hideTooltipInternal = () => {
+    tooltip?.hide();
+    if (!domOverlaysEnabled && callbacks?.onTooltipUpdate) {
+      callbacks.onTooltipUpdate(null);
+    }
+  };
+
+  const hideTooltip = () => {
+    lastTooltipContent = null;
+    lastTooltipX = null;
+    lastTooltipY = null;
+    hideTooltipInternal();
+  };
+
+  const emitCrosshairCallback = (x: number | null) => {
+    if (!domOverlaysEnabled && callbacks?.onCrosshairMove) {
+      callbacks.onCrosshairMove(x);
+    }
+  };
+
+  const emitHoverCallback = (payload: ChartGPUEventPayload | null) => {
+    if (!domOverlaysEnabled && callbacks?.onHoverChange) {
+      callbacks.onHoverChange(payload);
+    }
+  };
+
+  const updateLegend = (series: ResolvedChartGPUOptions['series'], theme: ResolvedChartGPUOptions['theme']) => {
+    legend?.update(series, theme);
+    if (!domOverlaysEnabled && callbacks?.onLegendUpdate) {
+      const items: LegendItem[] = series.map((s, idx) => ({
+        name: s.name ?? '',
+        color: s.color ?? '#888',
+        seriesIndex: idx,
+      }));
+      callbacks.onLegendUpdate(items);
+    }
+  };
+
+  updateLegend(currentOptions.series, currentOptions.theme);
 
   let dataStore = createDataStore(device);
 
@@ -1459,7 +1640,12 @@ export function createRenderCoordinator(
   highlightRenderer.setVisible(false);
 
   const initialGridArea = computeGridArea(gpuContext, currentOptions);
-  const eventManager = createEventManager(gpuContext.canvas, initialGridArea);
+  
+  // Event manager requires HTMLCanvasElement (DOM events) and domOverlays enabled.
+  // OffscreenCanvas doesn't support interactive features.
+  const eventManager = domOverlaysEnabled && isHTMLCanvasElement(gpuContext.canvas) 
+    ? createEventManager(gpuContext.canvas, initialGridArea)
+    : null;
 
   type PointerSource = 'mouse' | 'sync';
 
@@ -1730,7 +1916,7 @@ export function createRenderCoordinator(
     });
 
     // Fallback: ensure we flush even if rAF is delayed (high-frequency streams > 60Hz).
-    flushTimeoutId = window.setTimeout(() => {
+    flushTimeoutId = (typeof self !== 'undefined' ? self : window).setTimeout(() => {
       if (disposed) {
         cancelScheduledFlush();
         return;
@@ -1753,7 +1939,7 @@ export function createRenderCoordinator(
     cancelZoomResampleDebounce();
     zoomResampleDue = false;
 
-    zoomResampleDebounceTimer = window.setTimeout(() => {
+    zoomResampleDebounceTimer = (typeof self !== 'undefined' ? self : window).setTimeout(() => {
       zoomResampleDebounceTimer = null;
       if (disposed) return;
       zoomResampleDue = true;
@@ -1762,14 +1948,35 @@ export function createRenderCoordinator(
   };
 
   const getPlotSizeCssPx = (
-    canvas: HTMLCanvasElement,
+    canvas: SupportedCanvas,
     gridArea: GridArea
   ): { readonly plotWidthCss: number; readonly plotHeightCss: number } | null => {
-    const rect = canvas.getBoundingClientRect();
-    if (!(rect.width > 0) || !(rect.height > 0)) return null;
+    let canvasWidthCss: number;
+    let canvasHeightCss: number;
 
-    const plotWidthCss = rect.width - gridArea.left - gridArea.right;
-    const plotHeightCss = rect.height - gridArea.top - gridArea.bottom;
+    if (isHTMLCanvasElement(canvas)) {
+      // HTMLCanvasElement: use getBoundingClientRect() for actual CSS dimensions
+      const rect = canvas.getBoundingClientRect();
+      if (!(rect.width > 0) || !(rect.height > 0)) return null;
+      canvasWidthCss = rect.width;
+      canvasHeightCss = rect.height;
+    } else {
+      // OffscreenCanvas: calculate CSS pixels from canvas dimensions divided by device pixel ratio
+      const dpr = gpuContext.devicePixelRatio ?? 1.0;
+      console.log('[getPlotSizeCssPx] OffscreenCanvas dimensions:', {
+        canvasWidth: canvas.width,
+        canvasHeight: canvas.height,
+        dpr,
+        calculatedCssWidth: canvas.width / dpr,
+        calculatedCssHeight: canvas.height / dpr
+      });
+      canvasWidthCss = canvas.width / dpr;
+      canvasHeightCss = canvas.height / dpr;
+      if (!(canvasWidthCss > 0) || !(canvasHeightCss > 0)) return null;
+    }
+
+    const plotWidthCss = canvasWidthCss - gridArea.left - gridArea.right;
+    const plotHeightCss = canvasHeightCss - gridArea.top - gridArea.bottom;
     if (!(plotWidthCss > 0) || !(plotHeightCss > 0)) return null;
 
     return { plotWidthCss, plotHeightCss };
@@ -1787,6 +1994,7 @@ export function createRenderCoordinator(
       }
     | null => {
     const canvas = gpuContext.canvas;
+    // Support both HTMLCanvasElement and OffscreenCanvas for worker thread compatibility
     if (!canvas) return null;
 
     const plotSize = getPlotSizeCssPx(canvas, gridArea);
@@ -1796,7 +2004,18 @@ export function createRenderCoordinator(
     const xScale = createLinearScale().domain(domains.xDomain.min, domains.xDomain.max).range(0, plotSize.plotWidthCss);
     const yScale = createLinearScale().domain(domains.yDomain.min, domains.yDomain.max).range(plotSize.plotHeightCss, 0);
 
-    return { xScale, yScale, plotWidthCss: plotSize.plotWidthCss, plotHeightCss: plotSize.plotHeightCss };
+    const result = { xScale, yScale, plotWidthCss: plotSize.plotWidthCss, plotHeightCss: plotSize.plotHeightCss };
+    console.log('[computeInteractionScalesGridCssPx] Computed interaction scales:', {
+      canvasType: isHTMLCanvasElement(canvas) ? 'HTMLCanvasElement' : 'OffscreenCanvas',
+      plotWidthCss: result.plotWidthCss,
+      plotHeightCss: result.plotHeightCss,
+      xDomain: domains.xDomain,
+      yDomain: domains.yDomain,
+      xRange: [0, plotSize.plotWidthCss],
+      yRange: [plotSize.plotHeightCss, 0]
+    });
+
+    return result;
   };
 
   const buildTooltipParams = (seriesIndex: number, dataIndex: number, point: DataPoint): TooltipParams => {
@@ -1916,6 +2135,8 @@ export function createRenderCoordinator(
     }
 
     crosshairRenderer.setVisible(payload.isInGrid);
+    emitCrosshairCallback(payload.isInGrid ? payload.x : null);
+    emitHoverCallback(payload.isInGrid ? payload : null);
     requestRender();
   };
 
@@ -1926,16 +2147,18 @@ export function createRenderCoordinator(
 
     pointerState = { ...pointerState, isInGrid: false, hasPointer: false };
     crosshairRenderer.setVisible(false);
-    lastTooltipContent = null;
-    lastTooltipX = null;
-    lastTooltipY = null;
-    tooltip?.hide();
+    hideTooltip();
+    emitCrosshairCallback(null);
+    emitHoverCallback(null);
     setInteractionXInternal(null, 'mouse');
     requestRender();
   };
 
-  eventManager.on('mousemove', onMouseMove);
-  eventManager.on('mouseleave', onMouseLeave);
+  // Register event listeners only if event manager is available (HTMLCanvasElement).
+  if (eventManager) {
+    eventManager.on('mousemove', onMouseMove);
+    eventManager.on('mouseleave', onMouseLeave);
+  }
 
   // Optional internal “inside zoom” (wheel zoom + drag pan).
   let zoomState: ZoomState | null = null;
@@ -2002,7 +2225,8 @@ export function createRenderCoordinator(
     }
 
     // Only enable inside zoom handler when `{ type: 'inside' }` exists.
-    if (cfg.hasInside) {
+    // Requires event manager (HTMLCanvasElement only).
+    if (cfg.hasInside && eventManager) {
       if (!insideZoom) {
         insideZoom = createInsideZoom(eventManager, zoomState);
         insideZoom.enable();
@@ -2415,17 +2639,11 @@ export function createRenderCoordinator(
         lastTooltipY = null;
       }
       if (!shouldHaveTooltip && tooltip) {
-        lastTooltipContent = null;
-        lastTooltipX = null;
-        lastTooltipY = null;
-        tooltip.hide();
+        hideTooltip();
       }
-    } else {
-      lastTooltipContent = null;
-      lastTooltipX = null;
-      lastTooltipY = null;
-      tooltip?.hide();
-    }
+        } else {
+          hideTooltip();
+        }
 
     const nextCount = resolvedOptions.series.length;
     ensureAreaRendererCount(nextCount);
@@ -2665,7 +2883,7 @@ export function createRenderCoordinator(
     }
 
     const gridArea = computeGridArea(gpuContext, currentOptions);
-    eventManager.updateGridArea(gridArea);
+    eventManager?.updateGridArea(gridArea);
     const zoomRange = zoomState?.getRange() ?? null;
 
     const updateP = updateTransition ? clamp01(updateProgress01) : 1;
@@ -2687,7 +2905,9 @@ export function createRenderCoordinator(
 
     // Story 6: compute an x tick count that prevents label overlap (time axis only).
     // IMPORTANT: compute in CSS px, since labels are DOM elements in CSS px.
-    const canvasCssWidth = gpuContext.canvas.clientWidth;
+    // Note: This requires HTMLCanvasElement for accurate CSS pixel measurement.
+    const dpr = gridArea.devicePixelRatio;
+    const canvasCssWidth = gpuContext.canvas ? getCanvasCssWidth(gpuContext.canvas, dpr) : 0;
     const visibleXRangeMs = Math.abs(visibleXDomain.max - visibleXDomain.min);
 
     let xTickCount = DEFAULT_TICK_COUNT;
@@ -2802,8 +3022,10 @@ export function createRenderCoordinator(
       };
       crosshairRenderer.prepare(effectivePointer.x, effectivePointer.y, gridArea, crosshairOptions);
       crosshairRenderer.setVisible(true);
+      emitCrosshairCallback(effectivePointer.x);
     } else {
       crosshairRenderer.setVisible(false);
+      emitCrosshairCallback(null);
     }
 
     // Highlight: on hover, find nearest point and draw a ring highlight clipped to plot rect.
@@ -2823,14 +3045,14 @@ export function createRenderCoordinator(
           const yGridCss = interactionScales.yScale.scale(y);
 
           if (Number.isFinite(xGridCss) && Number.isFinite(yGridCss)) {
-            const dpr = window.devicePixelRatio || 1;
             const centerCssX = gridArea.left + xGridCss;
             const centerCssY = gridArea.top + yGridCss;
 
             const plotScissor = computePlotScissorDevicePx(gridArea);
             const point: HighlightPoint = {
-              centerDeviceX: centerCssX * dpr,
-              centerDeviceY: centerCssY * dpr,
+              centerDeviceX: centerCssX * gridArea.devicePixelRatio,
+              centerDeviceY: centerCssY * gridArea.devicePixelRatio,
+              devicePixelRatio: gridArea.devicePixelRatio,
               canvasWidth: gridArea.canvasWidth,
               canvasHeight: gridArea.canvasHeight,
               scissor: plotScissor,
@@ -2853,15 +3075,30 @@ export function createRenderCoordinator(
     }
 
     // Tooltip: on hover, find matches and render tooltip near cursor.
-    if (tooltip && effectivePointer.hasPointer && effectivePointer.isInGrid) {
+    // Note: Tooltips require HTMLCanvasElement (DOM-specific positioning) for DOM rendering.
+    // However, in worker mode (!domOverlaysEnabled), we still need to run hit-testing and callbacks.
+    if (effectivePointer.hasPointer && effectivePointer.isInGrid && currentOptions.tooltip?.show !== false) {
       const canvas = gpuContext.canvas;
 
-      if (interactionScales && canvas && currentOptions.tooltip?.show !== false) {
+      console.log('[Tooltip block] State check:', {
+        hasInteractionScales: !!interactionScales,
+        domOverlaysEnabled,
+        hasCanvas: !!canvas,
+        canvasType: canvas ? (isHTMLCanvasElement(canvas) ? 'HTMLCanvasElement' : 'OffscreenCanvas') : 'null',
+        interactionScales: interactionScales ? {
+          plotWidthCss: interactionScales.plotWidthCss,
+          plotHeightCss: interactionScales.plotHeightCss
+        } : null
+      });
+
+      if (interactionScales && (!domOverlaysEnabled || (canvas && isHTMLCanvasElement(canvas)))) {
         const formatter = currentOptions.tooltip?.formatter;
         const trigger = currentOptions.tooltip?.trigger ?? 'item';
 
-        const containerX = canvas.offsetLeft + effectivePointer.x;
-        const containerY = canvas.offsetTop + effectivePointer.y;
+        // In worker mode (OffscreenCanvas), offsetLeft/offsetTop don't exist
+        // Use effectivePointer coordinates directly as they're already in container-local CSS pixels
+        const containerX = isHTMLCanvasElement(canvas) ? canvas.offsetLeft + effectivePointer.x : effectivePointer.x;
+        const containerY = isHTMLCanvasElement(canvas) ? canvas.offsetTop + effectivePointer.y : effectivePointer.y;
 
         if (effectivePointer.source === 'sync') {
           // Sync semantics:
@@ -2870,10 +3107,7 @@ export function createRenderCoordinator(
           // - In 'item' mode, pick a deterministic single entry (first matching series).
           const matches = findPointsAtX(seriesForRender, effectivePointer.gridX, interactionScales.xScale);
           if (matches.length === 0) {
-            lastTooltipContent = null;
-            lastTooltipX = null;
-            lastTooltipY = null;
-            tooltip.hide();
+            hideTooltip();
           } else if (trigger === 'axis') {
             const paramsArray = matches.map((m) => buildTooltipParams(m.seriesIndex, m.dataIndex, m.point));
             const content = formatter
@@ -2883,12 +3117,9 @@ export function createRenderCoordinator(
               lastTooltipContent = content;
               lastTooltipX = containerX;
               lastTooltipY = containerY;
-              tooltip.show(containerX, containerY, content);
+              showTooltipInternal(containerX, containerY, content, paramsArray);
             } else if (!content) {
-              lastTooltipContent = null;
-              lastTooltipX = null;
-              lastTooltipY = null;
-              tooltip.hide();
+              hideTooltip();
             }
           } else {
             const m0 = matches[0];
@@ -2898,12 +3129,9 @@ export function createRenderCoordinator(
               lastTooltipContent = content;
               lastTooltipX = containerX;
               lastTooltipY = containerY;
-              tooltip.show(containerX, containerY, content);
+              showTooltipInternal(containerX, containerY, content, params);
             } else if (!content) {
-              lastTooltipContent = null;
-              lastTooltipX = null;
-              lastTooltipY = null;
-              tooltip.hide();
+              hideTooltip();
             }
           }
         } else if (trigger === 'axis') {
@@ -2933,12 +3161,9 @@ export function createRenderCoordinator(
               lastTooltipContent = content;
               lastTooltipX = containerX;
               lastTooltipY = containerY;
-              tooltip.show(containerX, containerY, content);
+              showTooltipInternal(containerX, containerY, content, [params]);
             } else if (!content) {
-              lastTooltipContent = null;
-              lastTooltipX = null;
-              lastTooltipY = null;
-              tooltip.hide();
+              hideTooltip();
             }
           } else {
             // Candlestick body hit-testing (mouse, axis trigger): include only when inside candle body.
@@ -2971,19 +3196,13 @@ export function createRenderCoordinator(
                     lastTooltipContent = content;
                     lastTooltipX = tooltipX;
                     lastTooltipY = tooltipY;
-                    tooltip.show(tooltipX, tooltipY, content);
+                    showTooltipInternal(tooltipX, tooltipY, content, paramsArray);
                   }
                 } else {
-                  lastTooltipContent = null;
-                  lastTooltipX = null;
-                  lastTooltipY = null;
-                  tooltip.hide();
+                  hideTooltip();
                 }
               } else {
-                lastTooltipContent = null;
-                lastTooltipX = null;
-                lastTooltipY = null;
-                tooltip.hide();
+                hideTooltip();
               }
             } else {
               const paramsArray = matches.map((m) => buildTooltipParams(m.seriesIndex, m.dataIndex, m.point));
@@ -3012,13 +3231,10 @@ export function createRenderCoordinator(
                   lastTooltipContent = content;
                   lastTooltipX = tooltipX;
                   lastTooltipY = tooltipY;
-                  tooltip.show(tooltipX, tooltipY, content);
+                  showTooltipInternal(tooltipX, tooltipY, content, paramsArray);
                 }
               } else {
-                lastTooltipContent = null;
-                lastTooltipX = null;
-                lastTooltipY = null;
-                tooltip.hide();
+                hideTooltip();
               }
             }
           }
@@ -3048,12 +3264,9 @@ export function createRenderCoordinator(
               lastTooltipContent = content;
               lastTooltipX = containerX;
               lastTooltipY = containerY;
-              tooltip.show(containerX, containerY, content);
+              showTooltipInternal(containerX, containerY, content, params);
             } else if (!content) {
-              lastTooltipContent = null;
-              lastTooltipX = null;
-              lastTooltipY = null;
-              tooltip.hide();
+              hideTooltip();
             }
           } else {
             // Candlestick body hit-testing (mouse, item trigger): prefer candle body over nearest-point logic.
@@ -3082,13 +3295,10 @@ export function createRenderCoordinator(
                   lastTooltipContent = content;
                   lastTooltipX = tooltipX;
                   lastTooltipY = tooltipY;
-                  tooltip.show(tooltipX, tooltipY, content);
+                  showTooltipInternal(tooltipX, tooltipY, content, candlestickResult.params);
                 }
               } else {
-                lastTooltipContent = null;
-                lastTooltipX = null;
-                lastTooltipY = null;
-                tooltip.hide();
+                hideTooltip();
               }
               return;
             }
@@ -3101,10 +3311,7 @@ export function createRenderCoordinator(
               interactionScales.yScale
             );
             if (!match) {
-              lastTooltipContent = null;
-              lastTooltipX = null;
-              lastTooltipY = null;
-              tooltip.hide();
+              hideTooltip();
             } else {
               const params = buildTooltipParams(match.seriesIndex, match.dataIndex, match.point);
               const content = formatter
@@ -3114,28 +3321,19 @@ export function createRenderCoordinator(
                 lastTooltipContent = content;
                 lastTooltipX = containerX;
                 lastTooltipY = containerY;
-                tooltip.show(containerX, containerY, content);
+                showTooltipInternal(containerX, containerY, content, params);
               } else if (!content) {
-                lastTooltipContent = null;
-                lastTooltipX = null;
-                lastTooltipY = null;
-                tooltip.hide();
+                hideTooltip();
               }
             }
           }
         }
-      } else {
-        lastTooltipContent = null;
-        lastTooltipX = null;
-        lastTooltipY = null;
-        tooltip.hide();
-      }
-    } else {
-      lastTooltipContent = null;
-      lastTooltipX = null;
-      lastTooltipY = null;
-      tooltip?.hide();
-    }
+            } else {
+              hideTooltip();
+            }
+        } else {
+          hideTooltip();
+        }
 
     const defaultBaseline = currentOptions.yAxis.min ?? yBaseDomain.min;
     const barSeriesConfigs: ResolvedBarSeriesConfig[] = [];
@@ -3205,9 +3403,9 @@ export function createRenderCoordinator(
           // Pie renderer sets/resets its own scissor. Animate intro via radius scale (CSS px).
           if (introP < 1) {
             const canvas = gpuContext.canvas;
-            const plotWidthCss = interactionScales?.plotWidthCss ?? (canvas ? getPlotSizeCssPx(canvas, gridArea)?.plotWidthCss : null);
+            const plotWidthCss = interactionScales?.plotWidthCss ?? (canvas && isHTMLCanvasElement(canvas) ? getPlotSizeCssPx(canvas, gridArea)?.plotWidthCss : null);
             const plotHeightCss =
-              interactionScales?.plotHeightCss ?? (canvas ? getPlotSizeCssPx(canvas, gridArea)?.plotHeightCss : null);
+              interactionScales?.plotHeightCss ?? (canvas && isHTMLCanvasElement(canvas) ? getPlotSizeCssPx(canvas, gridArea)?.plotHeightCss : null);
             const maxRadiusCss =
               typeof plotWidthCss === 'number' && typeof plotHeightCss === 'number'
                 ? 0.5 * Math.min(plotWidthCss, plotHeightCss)
@@ -3289,7 +3487,12 @@ export function createRenderCoordinator(
         }
       }
     }
-    barRenderer.render(pass);
+    // Clip bars to the plot grid (mirrors area/line scissor usage).
+    if (plotScissor.w > 0 && plotScissor.h > 0) {
+      pass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+      barRenderer.render(pass);
+      pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+    }
     for (let i = 0; i < seriesForRender.length; i++) {
       if (seriesForRender[i].type === 'candlestick') {
         candlestickRenderers[i].render(pass);
@@ -3330,27 +3533,36 @@ export function createRenderCoordinator(
 
     hasRenderedOnce = true;
 
-    if (overlay && overlayContainer) {
+    // Generate axis labels for DOM overlay (main thread) or callback (worker mode)
+    const shouldGenerateAxisLabels = hasCartesianSeries && (
+      (overlay && overlayContainer) ||  // DOM mode with overlay
+      (!domOverlaysEnabled && callbacks?.onAxisLabelsUpdate)  // Worker mode with callback
+    );
+
+    if (shouldGenerateAxisLabels) {
       const canvas = gpuContext.canvas;
-      // IMPORTANT: overlay positioning must be done in *CSS pixels* and in the overlayContainer's
-      // coordinate space (its padding box). Using   `canvas.width / dpr` + `getBoundingClientRect()`
-      // deltas can drift under CSS scaling/zoom and misalign with container padding/border.
-      const canvasCssWidth = canvas.clientWidth;
-      const canvasCssHeight = canvas.clientHeight;
+
+      // Get canvas dimensions (works for both HTMLCanvasElement and OffscreenCanvas)
+      const canvasCssWidth = getCanvasCssWidth(canvas, gpuContext.devicePixelRatio ?? 1);
+      const canvasCssHeight = getCanvasCssHeight(canvas, gpuContext.devicePixelRatio ?? 1);
       if (canvasCssWidth <= 0 || canvasCssHeight <= 0) return;
 
-      // Since the overlay is absolutely positioned relative to the canvas container,
-      // `offsetLeft/offsetTop` match that coordinate space.
-      const offsetX = canvas.offsetLeft;
-      const offsetY = canvas.offsetTop;
+      // Calculate offsets (only for DOM mode with HTMLCanvasElement)
+      // In worker mode (OffscreenCanvas), offsets are 0 since there's no offsetLeft/offsetTop
+      const offsetX = isHTMLCanvasElement(canvas) ? canvas.offsetLeft : 0;
+      const offsetY = isHTMLCanvasElement(canvas) ? canvas.offsetTop : 0;
 
       const plotLeftCss = clipXToCanvasCssPx(plotClipRect.left, canvasCssWidth);
       const plotRightCss = clipXToCanvasCssPx(plotClipRect.right, canvasCssWidth);
       const plotTopCss = clipYToCanvasCssPx(plotClipRect.top, canvasCssHeight);
       const plotBottomCss = clipYToCanvasCssPx(plotClipRect.bottom, canvasCssHeight);
 
-      overlay.clear();
-      if (!hasCartesianSeries) return;
+      // Clear DOM overlay if it exists
+      overlay?.clear();
+
+      // Collect axis labels for callback emission
+      const collectedXLabels: AxisLabel[] = [];
+      const collectedYLabels: AxisLabel[] = [];
 
       const xTickLengthCssPx = currentOptions.xAxis.tickLength ?? DEFAULT_TICK_LENGTH_CSS_PX;
       const xLabelY = plotBottomCss + xTickLengthCssPx + LABEL_PADDING_CSS_PX + currentOptions.theme.fontSize * 0.5;
@@ -3372,13 +3584,20 @@ export function createRenderCoordinator(
           xTickValues.length === 1 ? 'middle' : i === 0 ? 'start' : i === xTickValues.length - 1 ? 'end' : 'middle';
         const label = isTimeXAxis ? formatTimeTickValue(v, visibleXRangeMs) : formatTickValue(xFormatter!, v);
         if (label == null) continue;
-        const span = overlay.addLabel(label, offsetX + xCss, offsetY + xLabelY, {
-          fontSize: currentOptions.theme.fontSize,
-          color: currentOptions.theme.textColor,
-          anchor,
-        });
-        span.dir = 'auto';
-        span.style.fontFamily = currentOptions.theme.fontFamily;
+
+        // Collect label data for callback (worker mode)
+        const axisLabel: AxisLabel = { axis: 'x', text: label, x: offsetX + xCss, y: offsetY + xLabelY, anchor, isTitle: false };
+        collectedXLabels.push(axisLabel);
+
+        // Add to DOM overlay if it exists (main thread mode)
+        if (overlay) {
+          const span = overlay.addLabel(label, offsetX + xCss, offsetY + xLabelY, {
+            fontSize: currentOptions.theme.fontSize,
+            color: currentOptions.theme.textColor,
+            anchor,
+          });
+          styleAxisLabelSpan(span, axisLabel, currentOptions.theme);
+        }
       }
 
       const yTickCount = DEFAULT_TICK_COUNT;
@@ -3398,57 +3617,282 @@ export function createRenderCoordinator(
 
         const label = formatTickValue(yFormatter, v);
         if (label == null) continue;
-        const span = overlay.addLabel(label, offsetX + yLabelX, offsetY + yCss, {
-          fontSize: currentOptions.theme.fontSize,
-          color: currentOptions.theme.textColor,
-          anchor: 'end',
-        });
-        span.dir = 'auto';
-        span.style.fontFamily = currentOptions.theme.fontFamily;
-        ySpans.push(span);
+
+        // Collect label data for callback (worker mode)
+        const axisLabel: AxisLabel = { axis: 'y', text: label, x: offsetX + yLabelX, y: offsetY + yCss, anchor: 'end', isTitle: false };
+        collectedYLabels.push(axisLabel);
+
+        // Add to DOM overlay if it exists (main thread mode)
+        if (overlay) {
+          const span = overlay.addLabel(label, offsetX + yLabelX, offsetY + yCss, {
+            fontSize: currentOptions.theme.fontSize,
+            color: currentOptions.theme.textColor,
+            anchor: 'end',
+          });
+          styleAxisLabelSpan(span, axisLabel, currentOptions.theme);
+          ySpans.push(span);
+        }
       }
 
-      const axisNameFontSize = Math.max(
-        currentOptions.theme.fontSize + 1,
-        Math.round(currentOptions.theme.fontSize * 1.15)
-      );
+      const axisNameFontSize = getAxisTitleFontSize(currentOptions.theme.fontSize);
 
       const xAxisName = currentOptions.xAxis.name?.trim() ?? '';
       if (xAxisName.length > 0) {
         const xCenter = (plotLeftCss + plotRightCss) / 2;
-        const xTitleY =
-          xLabelY + currentOptions.theme.fontSize * 0.5 + LABEL_PADDING_CSS_PX + axisNameFontSize * 0.5;
-        const span = overlay.addLabel(xAxisName, offsetX + xCenter, offsetY + xTitleY, {
-          fontSize: axisNameFontSize,
-          color: currentOptions.theme.textColor,
-          anchor: 'middle',
-        });
-        span.dir = 'auto';
-        span.style.fontFamily = currentOptions.theme.fontFamily;
-        span.style.fontWeight = '600';
+        // Center title vertically between the tick labels and the zoom slider (when present).
+        // The zoom slider is an absolute-positioned overlay at the bottom of the canvas. We reserve
+        // additional `grid.bottom` space so tick labels stay visible above it.
+        //
+        // xLabelY is the vertical center of the tick labels; add half font size to approximate the
+        // tick-label "bottom edge" and then center the axis title within the remaining space.
+        const xTickLabelsBottom = xLabelY + currentOptions.theme.fontSize * 0.5;
+        const hasSliderZoom = currentOptions.dataZoom?.some((z) => z?.type === 'slider') ?? false;
+        const sliderTrackHeightCssPx = 32; // Keep in sync with ChartGPU/createDataZoomSlider defaults.
+        const bottomLimitCss = hasSliderZoom ? canvasCssHeight - sliderTrackHeightCssPx : canvasCssHeight;
+        const xTitleY = (xTickLabelsBottom + bottomLimitCss) / 2;
+
+        // Collect label data for callback (worker mode)
+        const axisLabel: AxisLabel = { axis: 'x', text: xAxisName, x: offsetX + xCenter, y: offsetY + xTitleY, anchor: 'middle', isTitle: true };
+        collectedXLabels.push(axisLabel);
+
+        // Add to DOM overlay if it exists (main thread mode)
+        if (overlay) {
+          const span = overlay.addLabel(xAxisName, offsetX + xCenter, offsetY + xTitleY, {
+            fontSize: axisNameFontSize,
+            color: currentOptions.theme.textColor,
+            anchor: 'middle',
+          });
+          styleAxisLabelSpan(span, axisLabel, currentOptions.theme);
+        }
       }
 
       const yAxisName = currentOptions.yAxis.name?.trim() ?? '';
       if (yAxisName.length > 0) {
+        // In DOM mode: measure actual rendered label widths
+        // In worker mode: estimate based on character count and font size
         const maxTickLabelWidth =
           ySpans.length === 0
-            ? 0
+            ? estimateMaxYTickLabelWidth(collectedYLabels, currentOptions.theme.fontSize)
             : ySpans.reduce((max, s) => Math.max(max, s.getBoundingClientRect().width), 0);
 
         const yCenter = (plotTopCss + plotBottomCss) / 2;
         const yTickLabelLeft = yLabelX - maxTickLabelWidth;
         const yTitleX = yTickLabelLeft - LABEL_PADDING_CSS_PX - axisNameFontSize * 0.5;
 
-        const span = overlay.addLabel(yAxisName, offsetX + yTitleX, offsetY + yCenter, {
-          fontSize: axisNameFontSize,
-          color: currentOptions.theme.textColor,
-          anchor: 'middle',
-          rotation: -90,
-        });
-        span.dir = 'auto';
-        span.style.fontFamily = currentOptions.theme.fontFamily;
-        span.style.fontWeight = '600';
+        // Collect label data for callback (worker mode)
+        const axisLabel: AxisLabel = { axis: 'y', text: yAxisName, x: offsetX + yTitleX, y: offsetY + yCenter, anchor: 'middle', rotation: -90, isTitle: true };
+        collectedYLabels.push(axisLabel);
+
+        // Add to DOM overlay if it exists (main thread mode)
+        if (overlay) {
+          const span = overlay.addLabel(yAxisName, offsetX + yTitleX, offsetY + yCenter, {
+            fontSize: axisNameFontSize,
+            color: currentOptions.theme.textColor,
+            anchor: 'middle',
+            rotation: -90,
+          });
+          styleAxisLabelSpan(span, axisLabel, currentOptions.theme);
+        }
       }
+
+      // Emit axis labels callback when DOM overlays are disabled (worker mode)
+      if (!domOverlaysEnabled && callbacks?.onAxisLabelsUpdate) {
+        callbacks.onAxisLabelsUpdate(collectedXLabels, collectedYLabels);
+      }
+    }
+  };
+
+  const handlePointerEvent: RenderCoordinator['handlePointerEvent'] = (event) => {
+    assertNotDisposed();
+    if (domOverlaysEnabled) {
+      // When DOM overlays are enabled, ignore handlePointerEvent (use native DOM events instead)
+      return;
+    }
+
+    const canvas = gpuContext.canvas;
+    if (!canvas) return;
+
+    // Validate event coordinates (guard against NaN/Infinity from worker thread serialization issues)
+    if (
+      !Number.isFinite(event.x) ||
+      !Number.isFinite(event.y) ||
+      !Number.isFinite(event.gridX) ||
+      !Number.isFinite(event.gridY) ||
+      !Number.isFinite(event.plotWidthCss) ||
+      !Number.isFinite(event.plotHeightCss)
+    ) {
+      return;
+    }
+
+    // Use pre-computed grid coordinates from event
+    const { type, x, y, gridX, gridY, plotWidthCss, plotHeightCss, isInGrid } = event;
+
+    if (type === 'leave') {
+      pointerState = { ...pointerState, isInGrid: false, hasPointer: false };
+      crosshairRenderer.setVisible(false);
+      lastTooltipContent = null;
+      lastTooltipX = null;
+      lastTooltipY = null;
+      
+      hideTooltipInternal();
+      emitCrosshairCallback(null);
+      emitHoverCallback(null);
+      
+      setInteractionXInternal(null, 'mouse');
+      requestRender();
+      return;
+    }
+
+    if (type === 'move') {
+      // Update pointer state for hover/crosshair
+      pointerState = {
+        source: 'mouse',
+        x,
+        y,
+        gridX,
+        gridY,
+        isInGrid,
+        hasPointer: true,
+      };
+
+      requestRender();
+      return;
+    }
+
+    if (type === 'click') {
+      // Perform hit testing for click events
+      if (!callbacks?.onClickData) return;
+
+      let nearest: NearestPointMatch | null = null;
+      let pieSlice: PieSliceMatch | null = null;
+      let candlestick: CandlestickMatch | null = null;
+
+      // Use cached interaction scales and render series from last render
+      if (isInGrid && lastInteractionScales) {
+        // Pie slice hit testing
+        pieSlice = findPieSliceAtPointer(
+          renderSeries,
+          gridX,
+          gridY,
+          plotWidthCss,
+          plotHeightCss
+        );
+
+        // Candlestick hit testing
+        if (!pieSlice) {
+          const candlestickResult = findCandlestickAtPointer(
+            renderSeries,
+            gridX,
+            gridY,
+            lastInteractionScales
+          );
+          if (candlestickResult) {
+            candlestick = {
+              seriesIndex: candlestickResult.seriesIndex,
+              dataIndex: candlestickResult.params.dataIndex,
+              point: candlestickResult.match.point,
+            };
+          }
+        }
+
+        // Nearest point hit testing
+        if (!pieSlice && !candlestick) {
+          nearest = findNearestPoint(
+            renderSeries,
+            gridX,
+            gridY,
+            lastInteractionScales.xScale,
+            lastInteractionScales.yScale,
+            20 // maxDistance in CSS pixels
+          );
+        }
+      }
+
+      callbacks.onClickData({
+        x,
+        y,
+        gridX,
+        gridY,
+        isInGrid,
+        nearest,
+        pieSlice,
+        candlestick,
+      });
+      return;
+    }
+
+    if (type === 'wheel') {
+      // Handle mouse wheel zoom (only when inside grid and zoom is enabled)
+      if (!isInGrid || !zoomState) return;
+      
+      const deltaX = event.deltaX ?? 0;
+      const deltaY = event.deltaY ?? 0;
+      const deltaMode = event.deltaMode ?? 0;
+      
+      // Normalize delta to CSS pixels
+      const normalizeWheelDelta = (delta: number, basis: number): number => {
+        if (!Number.isFinite(delta) || delta === 0) return 0;
+        
+        switch (deltaMode) {
+          case 1: // DOM_DELTA_LINE
+            return delta * 16;
+          case 2: // DOM_DELTA_PAGE
+            return delta * (Number.isFinite(basis) && basis > 0 ? basis : 800);
+          default: // DOM_DELTA_PIXEL
+            return delta;
+        }
+      };
+      
+      const deltaYCss = normalizeWheelDelta(deltaY, plotHeightCss);
+      const deltaXCss = normalizeWheelDelta(deltaX, plotWidthCss);
+      
+      // Check if horizontal scroll is dominant (pan operation)
+      if (Math.abs(deltaXCss) > Math.abs(deltaYCss) && deltaXCss !== 0) {
+        const { start, end } = zoomState.getRange();
+        const span = end - start;
+        if (!Number.isFinite(span) || span === 0) return;
+        
+        // Convert horizontal scroll delta to percent pan
+        // Positive deltaX = scroll right = pan right (show earlier data)
+        const deltaPct = (deltaXCss / plotWidthCss) * span;
+        if (!Number.isFinite(deltaPct) || deltaPct === 0) return;
+        
+        zoomState.pan(deltaPct);
+        return;
+      }
+      
+      // Vertical scroll zoom logic
+      if (deltaYCss === 0) return;
+      
+      // Calculate zoom factor from wheel delta
+      // Positive delta = scroll down = zoom out; negative = zoom in
+      const abs = Math.abs(deltaYCss);
+      if (!Number.isFinite(abs) || abs === 0) return;
+      
+      // Cap extreme deltas (some devices can emit huge values)
+      const capped = Math.min(abs, 200);
+      const sensitivity = 0.002;
+      const factor = Math.exp(capped * sensitivity);
+      
+      if (!(factor > 1)) return;
+      
+      const { start, end } = zoomState.getRange();
+      const span = end - start;
+      if (!Number.isFinite(span) || span === 0) return;
+      
+      // Calculate zoom center based on pointer position in plot
+      const r = Math.min(1, Math.max(0, gridX / plotWidthCss));
+      const centerPct = Math.min(100, Math.max(0, start + r * span));
+      
+      // Apply zoom
+      if (deltaYCss < 0) {
+        zoomState.zoomIn(centerPct, factor);
+      } else {
+        zoomState.zoomOut(centerPct, factor);
+      }
+      
+      requestRender();
+      return;
     }
   };
 
@@ -3492,7 +3936,7 @@ export function createRenderCoordinator(
     lastOptionsZoomRange = null;
     zoomRangeListeners.clear();
 
-    eventManager.dispose();
+    eventManager?.dispose();
     crosshairRenderer.dispose();
     highlightRenderer.dispose();
 
@@ -3550,7 +3994,8 @@ export function createRenderCoordinator(
     if (normalized === null && pointerState.hasPointer === false) {
       crosshairRenderer.setVisible(false);
       highlightRenderer.setVisible(false);
-      tooltip?.hide();
+      hideTooltipInternal();
+      emitCrosshairCallback(null);
     }
     requestRender();
   };
@@ -3591,6 +4036,7 @@ export function createRenderCoordinator(
     getZoomRange,
     setZoomRange,
     onZoomRangeChange,
+    handlePointerEvent,
     render,
     dispose,
   };

@@ -267,6 +267,205 @@ export interface AnimationConfig {
   readonly delay?: number;
 }
 
+/**
+ * Tooltip data emitted when domOverlays is false.
+ */
+export interface TooltipData {
+  readonly content: string;
+  /** Always an array for consistency (single-item trigger = array with 1 element). */
+  readonly params: ReadonlyArray<TooltipParams>;
+  /** Canvas-local CSS pixel x coordinate. */
+  readonly x: number;
+  /** Canvas-local CSS pixel y coordinate. */
+  readonly y: number;
+}
+
+/**
+ * Legend item emitted when domOverlays is false.
+ */
+export interface LegendItem {
+  readonly name: string;
+  readonly color: string;
+  readonly seriesIndex: number;
+}
+
+/**
+ * Axis label data emitted when domOverlays is false.
+ */
+export interface AxisLabel {
+  readonly axis: 'x' | 'y';
+  readonly text: string;
+  /** CSS pixel x coordinate relative to canvas (for worker thread positioning). */
+  readonly x: number;
+  /** CSS pixel y coordinate relative to canvas (for worker thread positioning). */
+  readonly y: number;
+  /** Text anchor position for proper alignment. */
+  readonly anchor?: 'start' | 'middle' | 'end';
+  /** Degrees, for rotated x-axis labels. */
+  readonly rotation?: number;
+  /** True for axis title vs tick label. */
+  readonly isTitle?: boolean;
+}
+
+/**
+ * High-level pointer event data for worker thread event forwarding.
+ * Pre-computed grid coordinates eliminate redundant computation in worker.
+ */
+export interface PointerEventData {
+  readonly type: 'move' | 'click' | 'leave' | 'wheel';
+  /** Canvas-local CSS pixels. */
+  readonly x: number;
+  /** Canvas-local CSS pixels. */
+  readonly y: number;
+  /** Plot-area-local CSS pixels. */
+  readonly gridX: number;
+  /** Plot-area-local CSS pixels. */
+  readonly gridY: number;
+  /** Plot area width in CSS pixels. */
+  readonly plotWidthCss: number;
+  /** Plot area height in CSS pixels. */
+  readonly plotHeightCss: number;
+  /** Whether pointer is inside plot area. */
+  readonly isInGrid: boolean;
+  /** Event timestamp in milliseconds for gesture detection. */
+  readonly timestamp: number;
+  /** Wheel event delta X (only for type: 'wheel'). */
+  readonly deltaX?: number;
+  /** Wheel event delta Y (only for type: 'wheel'). */
+  readonly deltaY?: number;
+  /** Wheel event delta Z (only for type: 'wheel'). */
+  readonly deltaZ?: number;
+  /** Wheel event delta mode: 0 = pixels, 1 = lines, 2 = pages (only for type: 'wheel'). */
+  readonly deltaMode?: number;
+}
+
+/**
+ * Normalized pointer event for worker thread event forwarding.
+ * @deprecated Use PointerEventData for worker thread communication.
+ * This type is retained for backward compatibility.
+ */
+export interface NormalizedPointerEvent {
+  readonly type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointerleave';
+  /** CSS pixels, canvas-local. */
+  readonly x: number;
+  /** CSS pixels, canvas-local. */
+  readonly y: number;
+  /** Mouse button state. */
+  readonly buttons: number;
+  /** Event timestamp for gesture detection. */
+  readonly timestamp: number;
+}
+
+/**
+ * Branded type for exact FPS measurements.
+ * Use this to distinguish FPS from other numeric values at compile time.
+ */
+export type ExactFPS = number & { readonly __brand: 'ExactFPS' };
+
+/**
+ * Branded type for millisecond durations.
+ * Use this to distinguish milliseconds from other numeric values at compile time.
+ */
+export type Milliseconds = number & { readonly __brand: 'Milliseconds' };
+
+/**
+ * Branded type for byte sizes.
+ * Use this to distinguish bytes from other numeric values at compile time.
+ */
+export type Bytes = number & { readonly __brand: 'Bytes' };
+
+/**
+ * Statistics for frame time measurements.
+ * All times are in milliseconds.
+ */
+export interface FrameTimeStats {
+  /** Minimum frame time in the measurement window. */
+  readonly min: Milliseconds;
+  /** Maximum frame time in the measurement window. */
+  readonly max: Milliseconds;
+  /** Average (mean) frame time. */
+  readonly avg: Milliseconds;
+  /** 50th percentile (median) frame time. */
+  readonly p50: Milliseconds;
+  /** 95th percentile frame time. */
+  readonly p95: Milliseconds;
+  /** 99th percentile frame time. */
+  readonly p99: Milliseconds;
+}
+
+/**
+ * GPU timing statistics.
+ * Tracks CPU vs GPU time for render operations.
+ */
+export interface GPUTimingStats {
+  /** Whether GPU timing is enabled and supported. */
+  readonly enabled: boolean;
+  /** CPU time spent preparing render commands (milliseconds). */
+  readonly cpuTime: Milliseconds;
+  /** GPU time spent executing render commands (milliseconds). */
+  readonly gpuTime: Milliseconds;
+}
+
+/**
+ * Memory usage statistics.
+ * Tracks GPU buffer allocations.
+ */
+export interface MemoryStats {
+  /** Currently used memory in bytes. */
+  readonly used: Bytes;
+  /** Peak memory usage in bytes since initialization. */
+  readonly peak: Bytes;
+  /** Total allocated memory in bytes (may include freed regions). */
+  readonly allocated: Bytes;
+}
+
+/**
+ * Frame drop detection statistics.
+ * Tracks when frame time exceeds expected interval.
+ */
+export interface FrameDropStats {
+  /** Total number of dropped frames. */
+  readonly totalDrops: number;
+  /** Consecutive dropped frames (current streak). */
+  readonly consecutiveDrops: number;
+  /** Timestamp of last dropped frame. */
+  readonly lastDropTimestamp: Milliseconds;
+}
+
+/**
+ * Comprehensive performance metrics.
+ * Provides exact FPS measurement and detailed frame statistics.
+ */
+export interface PerformanceMetrics {
+  /** Exact FPS calculated from frame time deltas. */
+  readonly fps: ExactFPS;
+  /** Frame time statistics (min/max/avg/percentiles). */
+  readonly frameTimeStats: FrameTimeStats;
+  /** GPU timing statistics (CPU vs GPU time). */
+  readonly gpuTiming: GPUTimingStats;
+  /** Memory usage statistics. */
+  readonly memory: MemoryStats;
+  /** Frame drop detection statistics. */
+  readonly frameDrops: FrameDropStats;
+  /** Total frames rendered since initialization. */
+  readonly totalFrames: number;
+  /** Total time elapsed since initialization (milliseconds). */
+  readonly elapsedTime: Milliseconds;
+}
+
+/**
+ * Performance capabilities of the current environment.
+ * Indicates which performance features are supported.
+ */
+export interface PerformanceCapabilities {
+  /** Whether GPU timing is supported (requires timestamp-query feature). */
+  readonly gpuTimingSupported: boolean;
+  /** Whether high-resolution timer is available (performance.now). */
+  readonly highResTimerSupported: boolean;
+  /** Whether performance metrics API is available. */
+  readonly performanceMetricsSupported: boolean;
+}
+
 export interface ChartGPUOptions {
   readonly grid?: GridConfig;
   readonly xAxis?: AxisConfig;
