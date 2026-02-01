@@ -25,9 +25,12 @@ export interface ReferenceLineInstance {
   /**
    * Position in **CANVAS-LOCAL CSS pixels**.
    *
-   * This matches the coordinate space used by pointer events and the crosshair renderer:
-   * - `xCssPx` / `yCssPx` measured from the canvas top-left corner (CSS pixels)
-   * - Not relative to plot origin; include grid margins if you want to place inside the plot
+   * This is the same coordinate space as pointer event payloads:
+   * - For vertical lines: canvas-local X in CSS px
+   * - For horizontal lines: canvas-local Y in CSS px
+   *
+   * The shader converts CSS px → device px using DPR, then snaps edges to integer
+   * device pixels for crisp, stable strokes.
    */
   readonly positionCssPx: number;
 

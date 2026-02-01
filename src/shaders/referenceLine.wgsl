@@ -84,11 +84,16 @@ fn quadUv(vid : u32) -> vec2<f32> {
 fn vsMain(in : VSIn, @builtin(vertex_index) vid : u32) -> VSOut {
   let uv = quadUv(vid);
   let dpr = max(1e-6, u.devicePixelRatio);
+  let dprRounded = roundToInt(dpr);
+  // Snap to integer device pixels only when DPR is ~integer.
+  // On fractional DPR (e.g. 1.25 / 1.5), hard snapping causes visible "jiggle" while zooming
+  // because continuous motion gets quantized to adjacent device pixels.
+  let snapToDevicePx = abs(dpr - dprRounded) < 1e-3;
 
   let axis = in.axisPos.x;
   let posCss = in.axisPos.y;
   let widthCss = max(0.0, in.widthDashCount.x);
-  let widthDevice = max(1.0, roundToInt(widthCss * dpr));
+  let widthDevice = max(1.0, select(widthCss * dpr, roundToInt(widthCss * dpr), snapToDevicePx));
 
   var xDevice : f32;
   var yDevice : f32;
@@ -97,14 +102,14 @@ fn vsMain(in : VSIn, @builtin(vertex_index) vid : u32) -> VSOut {
   if (axis < 0.5) {
     // Vertical line at x = posCss (canvas-local CSS px), spanning plot height.
     let centerX = posCss * dpr;
-    let startX = roundToInt(centerX - 0.5 * widthDevice);
+    let startX = select(centerX - 0.5 * widthDevice, roundToInt(centerX - 0.5 * widthDevice), snapToDevicePx);
     xDevice = startX + uv.x * widthDevice;
     yDevice = u.plotOrigin.y + uv.y * u.plotSize.y;
     alongCss = (uv.y * u.plotSize.y) / dpr;
   } else {
     // Horizontal line at y = posCss (canvas-local CSS px), spanning plot width.
     let centerY = posCss * dpr;
-    let startY = roundToInt(centerY - 0.5 * widthDevice);
+    let startY = select(centerY - 0.5 * widthDevice, roundToInt(centerY - 0.5 * widthDevice), snapToDevicePx);
     xDevice = u.plotOrigin.x + uv.x * u.plotSize.x;
     yDevice = startY + uv.y * widthDevice;
     alongCss = (uv.x * u.plotSize.x) / dpr;

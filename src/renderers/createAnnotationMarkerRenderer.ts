@@ -207,6 +207,12 @@ export function createAnnotationMarkerRenderer(device: GPUDevice, options?: Anno
     }
 
     instanceCount = outFloats / INSTANCE_STRIDE_FLOATS;
+
+    // PERFORMANCE: Early exit if no valid instances (skip buffer allocation/write)
+    if (instanceCount === 0) {
+      return;
+    }
+
     const requiredBytes = Math.max(4, instanceCount * INSTANCE_STRIDE_BYTES);
 
     if (!instanceBuffer || instanceBuffer.size < requiredBytes) {
@@ -225,9 +231,8 @@ export function createAnnotationMarkerRenderer(device: GPUDevice, options?: Anno
       });
     }
 
-    if (instanceBuffer && instanceCount > 0) {
-      device.queue.writeBuffer(instanceBuffer, 0, cpuInstanceStagingBuffer, 0, instanceCount * INSTANCE_STRIDE_BYTES);
-    }
+    // PERFORMANCE: Only write buffer when we have instances (instanceCount > 0 already checked above)
+    device.queue.writeBuffer(instanceBuffer, 0, cpuInstanceStagingBuffer, 0, instanceCount * INSTANCE_STRIDE_BYTES);
   };
 
   const render: AnnotationMarkerRenderer['render'] = (passEncoder, firstInstance = 0, requestedCount) => {

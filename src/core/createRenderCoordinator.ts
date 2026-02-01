@@ -1462,6 +1462,12 @@ export function createRenderCoordinator(
     updateInterpolationCaches.pieDataBySeriesIndex.length = 0;
   };
 
+  // PERFORMANCE: Reusable arrays for annotation processing (avoid allocations per frame)
+  const annotationLineBelow: ReferenceLineInstance[] = [];
+  const annotationLineAbove: ReferenceLineInstance[] = [];
+  const annotationMarkerBelow: AnnotationMarkerInstance[] = [];
+  const annotationMarkerAbove: AnnotationMarkerInstance[] = [];
+
   const interpolateCartesianSeriesDataByIndex = (
     fromData: ReadonlyArray<DataPoint>,
     toData: ReadonlyArray<DataPoint>,
@@ -3103,10 +3109,13 @@ export function createRenderCoordinator(
       .range(plotClipRect.left, plotClipRect.right);
     const yScale = createLinearScale().domain(yBaseDomain.min, yBaseDomain.max).range(plotClipRect.bottom, plotClipRect.top);
 
+    // PERFORMANCE: Cache canvas CSS dimensions (used for both GPU overlays and label processing)
     // Annotations (GPU overlays) are specified in data-space and converted to CANVAS-LOCAL CSS pixels.
     const canvas = gpuContext.canvas;
-    const canvasCssWidthForAnnotations = canvas ? getCanvasCssWidth(canvas, gpuContext.devicePixelRatio ?? 1) : 0;
-    const canvasCssHeightForAnnotations = canvas ? getCanvasCssHeight(canvas, gpuContext.devicePixelRatio ?? 1) : 0;
+    // IMPORTANT: use the same DPR as the GPU render path (gridArea) to keep CSS↔device conversions stable.
+    const canvasDprForAnnotations = gridArea.devicePixelRatio;
+    const canvasCssWidthForAnnotations = canvas ? getCanvasCssWidth(canvas, canvasDprForAnnotations) : 0;
+    const canvasCssHeightForAnnotations = canvas ? getCanvasCssHeight(canvas, canvasDprForAnnotations) : 0;
 
     const plotLeftCss = canvasCssWidthForAnnotations > 0 ? clipXToCanvasCssPx(plotClipRect.left, canvasCssWidthForAnnotations) : 0;
     const plotRightCss = canvasCssWidthForAnnotations > 0 ? clipXToCanvasCssPx(plotClipRect.right, canvasCssWidthForAnnotations) : 0;
@@ -3126,17 +3135,19 @@ export function createRenderCoordinator(
 
     const annotations: ReadonlyArray<AnnotationConfig> = hasCartesianSeries ? (currentOptions.annotations ?? []) : [];
 
-    const lineBelow: ReferenceLineInstance[] = [];
-    const lineAbove: ReferenceLineInstance[] = [];
-    const markerBelow: AnnotationMarkerInstance[] = [];
-    const markerAbove: AnnotationMarkerInstance[] = [];
+    // PERFORMANCE: Reuse arrays from previous frame (clear and reuse to avoid allocations)
+    annotationLineBelow.length = 0;
+    annotationLineAbove.length = 0;
+    annotationMarkerBelow.length = 0;
+    annotationMarkerAbove.length = 0;
 
+    // PERFORMANCE: Early exit if no annotations or invalid canvas dimensions
     if (annotations.length > 0 && canvasCssWidthForAnnotations > 0 && canvasCssHeightForAnnotations > 0 && plotWidthCss > 0 && plotHeightCss > 0) {
       for (let i = 0; i < annotations.length; i++) {
         const a = annotations[i]!;
         const layer = a.layer ?? 'aboveSeries';
-        const targetLines = layer === 'belowSeries' ? lineBelow : lineAbove;
-        const targetMarkers = layer === 'belowSeries' ? markerBelow : markerAbove;
+        const targetLines = layer === 'belowSeries' ? annotationLineBelow : annotationLineAbove;
+        const targetMarkers = layer === 'belowSeries' ? annotationMarkerBelow : annotationMarkerAbove;
 
         const styleColor = a.style?.color;
         const styleOpacity = a.style?.opacity;
@@ -3202,14 +3213,15 @@ export function createRenderCoordinator(
       }
     }
 
+    // PERFORMANCE: Use array references directly instead of spreading (avoids allocation)
     const combinedReferenceLines: ReadonlyArray<ReferenceLineInstance> =
-      lineBelow.length + lineAbove.length > 0 ? [...lineBelow, ...lineAbove] : [];
+      annotationLineBelow.length + annotationLineAbove.length > 0 ? [...annotationLineBelow, ...annotationLineAbove] : [];
     const combinedMarkers: ReadonlyArray<AnnotationMarkerInstance> =
-      markerBelow.length + markerAbove.length > 0 ? [...markerBelow, ...markerAbove] : [];
-    const referenceLineBelowCount = lineBelow.length;
-    const referenceLineAboveCount = lineAbove.length;
-    const markerBelowCount = markerBelow.length;
-    const markerAboveCount = markerAbove.length;
+      annotationMarkerBelow.length + annotationMarkerAbove.length > 0 ? [...annotationMarkerBelow, ...annotationMarkerAbove] : [];
+    const referenceLineBelowCount = annotationLineBelow.length;
+    const referenceLineAboveCount = annotationLineAbove.length;
+    const markerBelowCount = annotationMarkerBelow.length;
+    const markerAboveCount = annotationMarkerAbove.length;
 
     // Story 6: compute an x tick count that prevents label overlap (time axis only).
     // IMPORTANT: compute in CSS px, since labels are DOM elements in CSS px.
@@ -4104,13 +4116,14 @@ export function createRenderCoordinator(
     }
 
     // Generate annotation labels (DOM overlay in main-thread mode, callback in worker mode).
+    // PERFORMANCE: Reuse cached canvas dimensions from GPU overlay processing above
     const shouldUpdateAnnotationLabels = hasCartesianSeries && (
       (annotationOverlay && overlayContainer) ||
       (!domOverlaysEnabled && callbacks?.onAnnotationsUpdate)
     );
 
     if (shouldUpdateAnnotationLabels) {
-      const canvas = gpuContext.canvas;
+      // PERFORMANCE: Reuse canvasCssWidthForAnnotations and canvasCssHeightForAnnotations computed above
       if (
         canvas &&
         canvasCssWidthForAnnotations > 0 &&
@@ -4139,12 +4152,16 @@ export function createRenderCoordinator(
           return n.toFixed(d);
         };
 
+        // PERFORMANCE: Cache regex pattern (compiled once per render, reused for all templates)
+        const templateRegex = /\{(x|y|value|name)\}/g;
         const renderTemplate = (
           template: string,
           values: Readonly<{ x?: number; y?: number; value?: number; name?: string }>,
           decimals?: number
         ): string => {
-          return template.replace(/\{(x|y|value|name)\}/g, (_m, key) => {
+          // PERFORMANCE: Reset regex lastIndex to ensure consistent behavior
+          templateRegex.lastIndex = 0;
+          return template.replace(templateRegex, (_m, key) => {
             if (key === 'name') return values.name ?? '';
             const v = (values as any)[key] as number | undefined;
             return v == null ? '' : formatNumber(v, decimals);
@@ -4163,15 +4180,21 @@ export function createRenderCoordinator(
           }
         };
 
-        const labelsOut: AnnotationLabelData[] = [];
+        // PERFORMANCE: Skip label processing if no annotations
         const annotations = currentOptions.annotations ?? [];
+        if (annotations.length === 0) {
+          if (!domOverlaysEnabled && callbacks?.onAnnotationsUpdate) {
+            callbacks.onAnnotationsUpdate([]);
+          }
+        } else {
+          const labelsOut: AnnotationLabelData[] = [];
 
-        for (let i = 0; i < annotations.length; i++) {
-          const a = annotations[i]!;
+          for (let i = 0; i < annotations.length; i++) {
+            const a = annotations[i]!;
 
-          const labelCfg = a.label;
-          const wantsLabel = labelCfg != null || a.type === 'text';
-          if (!wantsLabel) continue;
+            const labelCfg = a.label;
+            const wantsLabel = labelCfg != null || a.type === 'text';
+            if (!wantsLabel) continue;
 
           // Compute anchor point (canvas-local CSS px).
           let anchorXCss: number | null = null;
@@ -4302,29 +4325,30 @@ export function createRenderCoordinator(
 
           labelsOut.push(labelData);
 
-          if (annotationOverlay) {
-            const span = annotationOverlay.addLabel(trimmed, labelData.x, labelData.y, {
-              fontSize,
-              color,
-              anchor,
-            });
-            if (labelData.background) {
-              span.style.backgroundColor = labelData.background.backgroundColor;
-              span.style.display = 'inline-block';
-              span.style.boxSizing = 'border-box';
-              if (labelData.background.padding) {
-                const [t, r, b, l] = labelData.background.padding;
-                span.style.padding = `${t}px ${r}px ${b}px ${l}px`;
-              }
-              if (labelData.background.borderRadius != null) {
-                span.style.borderRadius = `${labelData.background.borderRadius}px`;
+            if (annotationOverlay) {
+              const span = annotationOverlay.addLabel(trimmed, labelData.x, labelData.y, {
+                fontSize,
+                color,
+                anchor,
+              });
+              if (labelData.background) {
+                span.style.backgroundColor = labelData.background.backgroundColor;
+                span.style.display = 'inline-block';
+                span.style.boxSizing = 'border-box';
+                if (labelData.background.padding) {
+                  const [t, r, b, l] = labelData.background.padding;
+                  span.style.padding = `${t}px ${r}px ${b}px ${l}px`;
+                }
+                if (labelData.background.borderRadius != null) {
+                  span.style.borderRadius = `${labelData.background.borderRadius}px`;
+                }
               }
             }
           }
-        }
 
-        if (!domOverlaysEnabled && callbacks?.onAnnotationsUpdate) {
-          callbacks.onAnnotationsUpdate(labelsOut);
+          if (!domOverlaysEnabled && callbacks?.onAnnotationsUpdate) {
+            callbacks.onAnnotationsUpdate(labelsOut);
+          }
         }
       } else {
         annotationOverlay?.clear();
