@@ -10,6 +10,10 @@ const showError = (message: string): void => {
   el.style.display = 'block';
 };
 
+// Type guard for the tuple form of DataPoint. We define this explicitly because `Array.isArray(...)`
+// narrows to `any[]`, which does not reliably narrow `readonly [...]` tuples in strict TS configs.
+const isTuplePoint = (p: DataPoint): p is readonly [x: number, y: number, size?: number] => Array.isArray(p);
+
 type DisposableResizeObserver = Pick<ResizeObserver, 'observe' | 'unobserve' | 'disconnect'>;
 
 const attachCoalescedResizeObserver = (container: HTMLElement, chart: ChartGPUInstance): DisposableResizeObserver => {
@@ -36,6 +40,35 @@ const attachCoalescedResizeObserver = (container: HTMLElement, chart: ChartGPUIn
   };
 };
 
+type Extrema = Readonly<{
+  maxIndex: number;
+  maxY: number;
+  minIndex: number;
+  minY: number;
+}>;
+
+const findExtrema = (data: ReadonlyArray<DataPoint>): Extrema => {
+  let maxIndex = 0;
+  let minIndex = 0;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+
+  for (let i = 0; i < data.length; i++) {
+    const p = data[i]!;
+    const y = isTuplePoint(p) ? p[1] : p.y;
+    if (y > maxY) {
+      maxY = y;
+      maxIndex = i;
+    }
+    if (y < minY) {
+      minY = y;
+      minIndex = i;
+    }
+  }
+
+  return { maxIndex, maxY, minIndex, minY };
+};
+
 const createTimeSeries = (count: number): ReadonlyArray<DataPoint> => {
   const n = Math.max(2, Math.floor(count));
   const out: DataPoint[] = new Array(n);
@@ -48,11 +81,12 @@ const createTimeSeries = (count: number): ReadonlyArray<DataPoint> => {
     const t = i / (n - 1);
     const x = startTs + i * stepMs;
 
-    const trend = (t - 0.5) * 1.25;
-    const slow = Math.sin(i * 0.06) * 0.9;
-    const hf = Math.sin(i * 0.28 + 0.7) * 0.18;
-    const noise = (Math.random() - 0.5) * 0.08;
-    const y = trend + slow + hf + noise;
+    // Bell curve centered at t=0.5 (global peak in middle)
+    const bellCurve = Math.exp(-8 * Math.pow(t - 0.5, 2)) * 0.6;
+    const slow = Math.sin(i * 0.06) * 0.2;
+    const hf = Math.sin(i * 0.28 + 0.7) * 0.1;
+    const noise = (Math.random() - 0.5) * 0.04;
+    const y = bellCurve + slow + hf + noise;
 
     out[i] = [x, y] as const;
   }
@@ -66,17 +100,25 @@ async function main(): Promise<void> {
     throw new Error('Chart container not found');
   }
 
-  const jsonOutput = document.getElementById('json-output');
-  if (!jsonOutput) {
-    throw new Error('JSON output element not found');
-  }
+  const data = createTimeSeries(900);
+  const { maxIndex, maxY, minIndex, minY } = findExtrema(data);
 
-  const data = createTimeSeries(600);
+  const maxP = data[maxIndex]!;
+  const maxX = isTuplePoint(maxP) ? maxP[0] : maxP.x;
+
+  const minP = data[minIndex]!;
+  const minX = isTuplePoint(minP) ? minP[0] : minP.x;
+
+  const vLineIndex = Math.floor(data.length * 0.6);
+  const vLinePoint = data[vLineIndex]!;
+  const vLineX = isTuplePoint(vLinePoint) ? vLinePoint[0] : vLinePoint.x;
+
+  const referenceY = Math.round((maxY * 0.35 + minY * 0.65) * 1000) / 1000;
 
   const options: ChartGPUOptions = {
     grid: { left: 70, right: 24, top: 24, bottom: 44 },
     xAxis: { type: 'time', name: 'Time (ms)' },
-    yAxis: { type: 'value', name: 'Value' },
+    yAxis: { type: 'value', name: 'Value', min: -0.2, max: 1.0 },
     tooltip: { trigger: 'axis' },
     dataZoom: [{ type: 'inside' }],
     palette: ['#4a9eff'],
@@ -84,24 +126,86 @@ async function main(): Promise<void> {
     series: [
       {
         type: 'line',
-        name: 'signal',
+        name: 'synthetic',
         data,
         color: '#4a9eff',
         lineStyle: { width: 2, opacity: 1 },
       },
     ],
-    annotations: [],
+    annotations: [
+      // Horizontal reference line (type: 'lineY') with dashed style + template label + decimals.
+      {
+        id: 'ref-y',
+        type: 'lineY',
+        y: referenceY,
+        layer: 'belowSeries',
+        style: { color: '#ffd166', lineWidth: 2, lineDash: [8, 6], opacity: 0.95 },
+        label: {
+          template: 'ref y={y}',
+          decimals: 3,
+          offset: [8, -8],
+          anchor: 'start',
+          background: { color: '#000000', opacity: 0.55, padding: [2, 6, 2, 6], borderRadius: 6 },
+        },
+      },
+
+      // Vertical reference line (type: 'lineX') with solid style + label.
+      {
+        id: 'ref-x',
+        type: 'lineX',
+        x: vLineX,
+        layer: 'belowSeries',
+        style: { color: '#40d17c', lineWidth: 2, opacity: 0.85 },
+        label: {
+          text: 'milestone',
+          offset: [8, 10],
+          anchor: 'start',
+          background: { color: '#000000', opacity: 0.55, padding: [2, 6, 2, 6], borderRadius: 6 },
+        },
+      },
+
+      // Point annotation (type: 'point') with marker styling + label background.
+      {
+        id: 'peak-point',
+        type: 'point',
+        x: maxX,
+        y: maxY,
+        layer: 'aboveSeries',
+        marker: { symbol: 'circle', size: 8, style: { color: '#ff4ab0', opacity: 1 } },
+        label: {
+          template: 'peak={y}',
+          decimals: 2,
+          offset: [10, -10],
+          anchor: 'start',
+          background: { color: '#000000', opacity: 0.7, padding: [2, 6, 2, 6], borderRadius: 6 },
+        },
+      },
+
+      // Text annotation in plot space (stays pinned to the plot HUD position).
+      {
+        id: 'hud-text',
+        type: 'text',
+        layer: 'aboveSeries',
+        position: { space: 'plot', x: 0.04, y: 0.08 },
+        text: 'plot-space text (pinned)',
+        style: { color: '#e0e0e0', opacity: 0.95 },
+      },
+
+      // Text annotation in data space (tracks with pan/zoom).
+      {
+        id: 'data-text',
+        type: 'text',
+        layer: 'aboveSeries',
+        position: { space: 'data', x: minX, y: minY },
+        text: 'data-space text (tracks)',
+        style: { color: '#9b5cff', opacity: 0.95 },
+      },
+    ],
   };
 
   let chart: ChartGPUInstance | null = null;
   let ro: DisposableResizeObserver | null = null;
   let authoring: AnnotationAuthoringInstance | null = null;
-
-  const updateJSONOutput = (): void => {
-    if (!authoring) return;
-    const annotations = authoring.getAnnotations();
-    jsonOutput.textContent = JSON.stringify(annotations, null, 2);
-  };
 
   const disposeAll = (): void => {
     authoring?.dispose();
@@ -119,27 +223,13 @@ async function main(): Promise<void> {
 
   // Create annotation authoring helper
   authoring = createAnnotationAuthoring(container, chart, {
-    showToolbar: true,
     enableContextMenu: true,
   });
-
-  // Update JSON output initially
-  updateJSONOutput();
-
-  // Poll for annotation changes (simple approach for demo)
-  const pollInterval = setInterval(() => {
-    if (!authoring) {
-      clearInterval(pollInterval);
-      return;
-    }
-    updateJSONOutput();
-  }, 500);
 
   let cleanedUp = false;
   const cleanup = (): void => {
     if (cleanedUp) return;
     cleanedUp = true;
-    clearInterval(pollInterval);
     window.removeEventListener('beforeunload', cleanup);
     disposeAll();
   };
