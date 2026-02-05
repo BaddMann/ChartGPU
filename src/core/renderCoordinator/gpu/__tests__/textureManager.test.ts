@@ -14,7 +14,7 @@ beforeAll(() => {
     COMPUTE: 4,
   };
   // @ts-ignore - Mock WebGPU texture usage flags
-  globalThis.GPUTextureU sage = {
+  globalThis.GPUTextureUsage = {
     COPY_SRC: 0x01,
     COPY_DST: 0x02,
     TEXTURE_BINDING: 0x04,
