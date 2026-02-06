@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/chart-gpu.jpg" alt="ChartGPU" width="400">
+  <img src="docs/assets/chartgpu.png" alt="ChartGPU" width="400">
 </p>
 
 <p align="center">
